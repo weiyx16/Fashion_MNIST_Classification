@@ -8,11 +8,14 @@
 ## Schedule
 
 - [x] Training and Testing File Structure
-- [ ] Submission Test
+- [x] Submission Test
 - [x] Finish model adapted from ResNet-18
-- [ ] Take a look at what the hell the imgs are.
-- [ ] Try LeNet and other simpler model.
-- [ ] Write a model myself?
+- [x] Take a look at what the hell the imgs are.
+- [x] Try LeNet and other simpler model.
+- [x] Write a model myself, e.g. rewrite the resnet-18 to adapt to my input? What about the batchNorm Layer and Frozon?
+- [ ] Train LR_Scheduler with warming up, at least a decaying lr (it seems the validation loss decay really slow.?
+- [x] A better dataArgument with noisy padding or else. And if Need Normalize?
+- [ ] How to deal with the problem that the loss of trainset with splitting validation set
 
 <!-- # Leaf Classification and Vein Segmentation
 

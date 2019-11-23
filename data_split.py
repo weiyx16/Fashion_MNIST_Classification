@@ -20,10 +20,13 @@ if __name__ == "__main__":
     src_data_path = r"./src.npy"
     src_gt_path = r"./src.csv"
     data = np.load(src_data_path)  # (30000, 784)
+    mean = np.mean(data.ravel())
+    std = np.std(data.ravel())
+
     gt = pd.read_csv(src_gt_path)
 
     data_len = data.shape[0]
-    split_partial = 0.2
+    split_partial = 0.15
     shuffle_idx = np.arange(data_len)
     np.random.shuffle(shuffle_idx)
     val_set_end = round(data_len * split_partial ,0)
@@ -51,3 +54,4 @@ if __name__ == "__main__":
     train_gt.to_csv("./data/train.csv", index=False)
 
     print(" >> Split the src dataset into {} training img, and {} validation img" .format(train_data.shape[0], val_data.shape[0]))
+    print(" Transforms.Normalize(mean = {}, std = {})" .format(mean, std))

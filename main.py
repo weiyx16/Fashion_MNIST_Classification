@@ -24,6 +24,8 @@ from PIL import Image
 from tqdm import tqdm
 from datetime import date
 from MyDataset import CustomTensorDataset
+from LeNet import LeNet
+from ResNet import ResNet18
 
 print("PyTorch Version: ",torch.__version__)
 
@@ -37,26 +39,36 @@ validation_gt_dir = r"./data/validation.csv"
 test_data_dir = r"./data/test.npy"
 
 # Models to choose from [resnet, alexnet, vgg, squeezenet, densenet, inception]
-model_name = "resnet"
+model_name = "resnet_adpat"
 
 # Number of classes in the dataset
 num_classes = 10
 
+# if you want to see what's in the training set
+debug_img = 0
+
 # Batch size for training (change depending on how much memory you have)
-batch_size = 12
+batch_size = 16
 
 # Number of epochs to train
-num_epochs = 10
+num_epochs = 50
+
+# begin_lr
+begin_lr = 1e-3
+
+# extra params
+ext_params = 'lr_decay-{}-bs-{}-ep-{}' .format(begin_lr, batch_size, num_epochs)
 
 # Flag for feature extracting. When False, we finetune the whole model,
 #   when True we only update the reshaped layer params
 feature_extract = False
 
-def train_model(model, dataloaders, criterion, optimizer, num_epochs=15, is_inception=False):
+def train_model(model, dataloaders, criterion, optimizer, scheduler=None, num_epochs=15, is_inception=False):
     since = time.time()
 
     # validation accuracy
     val_acc_history = []
+    train_acc_history = []
     # for save the best accurate model
     best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
@@ -130,6 +142,12 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs=15, is_ince
                 best_model_wts = copy.deepcopy(model.state_dict())
             if phase == 'val':
                 val_acc_history.append(epoch_acc)
+                lr_decay_metric = epoch_loss
+            else:
+                train_acc_history.append(epoch_acc)
+
+        if scheduler:
+            scheduler.step(lr_decay_metric)
 
     time_elapsed = time.time() - since
     print(' Training complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
@@ -137,7 +155,7 @@ def train_model(model, dataloaders, criterion, optimizer, num_epochs=15, is_ince
 
     # load best model weights
     model.load_state_dict(best_model_wts)
-    return model, val_acc_history
+    return model, val_acc_history, train_acc_history
 
 def set_parameter_requires_grad(model, feature_extracting):
     """
@@ -215,6 +233,14 @@ def initialize_model(model_name, num_classes, feature_extract=True, use_pretrain
         model_ft.fc = nn.Linear(num_ftrs,num_classes)
         input_size = 299
 
+    elif model_name == "LeNet":
+        input_size = 28
+        model_ft = LeNet()
+
+    elif model_name == "resnet_adpat":
+        input_size = 28
+        model_ft = ResNet18(num_classes)
+
     else:
         print("Invalid model name, exiting...")
         exit()
@@ -252,32 +278,7 @@ if __name__ == "__main__":
 
     # Step2 Dataset:
     # Data augmentation and normalization function for training
-    # Also rgb2gray
     # Just normalization for validation
-    data_transforms = {
-        'train': transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize(input_size, interpolation=Image.NEAREST),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomVerticalFlip(),
-            transforms.ToTensor()
-            # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ]),
-        'val': transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize(input_size, interpolation=Image.NEAREST),
-            transforms.CenterCrop(input_size),
-            transforms.ToTensor()
-            # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ]),
-        'test': transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize(input_size, interpolation=Image.NEAREST),
-            transforms.ToTensor()
-            # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        ]),
-    }
-
     train_data = np.load(train_data_dir)
     train_gt = np.genfromtxt(train_gt_dir, delimiter=',')
     train_gt = train_gt[1:,]
@@ -285,6 +286,35 @@ if __name__ == "__main__":
     val_gt = np.genfromtxt(validation_gt_dir, delimiter=',')
     val_gt = val_gt[1:,]
     test_data = np.load(test_data_dir)
+    mean = np.mean(test_data.ravel())
+    std = np.std(test_data.ravel())
+
+    data_transforms = {
+        'train': transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize(input_size, interpolation=Image.NEAREST),
+            transforms.RandomCrop(input_size, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize([74.6176043792517/255.0], [85.28552921727005/255.0])
+            # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ]),
+        'val': transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize(input_size, interpolation=Image.NEAREST),
+            transforms.CenterCrop(input_size),
+            transforms.ToTensor(),
+            transforms.Normalize([74.6176043792517/255.0], [85.28552921727005/255.0])
+            # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ]),
+        'test': transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize(input_size, interpolation=Image.NEAREST),
+            transforms.ToTensor(),
+            transforms.Normalize([mean/255.0], [std/255.0])
+        ]),
+    }
 
     print(" >> Initializing Datasets and Dataloaders")
     
@@ -311,13 +341,26 @@ if __name__ == "__main__":
     # Create valing and validation datasets
     image_datasets_dict = {phase: CustomTensorDataset(tensors=(tensor_x[phase], tensor_y[phase]), 
                                                         transform=data_transforms[phase], 
+                                                        showing_img=False,
                                                         is_training=False if phase=='test' else True, 
-                                                        clone_to_three=True) for phase in ['train', 'val', 'test']}
+                                                        clone_to_three=False) for phase in ['train', 'val', 'test']}
     # Create training and validation dataloaders
     dataloaders_dict = {phase: DataLoader(image_datasets_dict[phase], 
                                             batch_size=batch_size, 
                                             shuffle=False if phase=='test' else True, 
                                             num_workers=4) for phase in ['train', 'val', 'test']}
+
+    if debug_img:# debug the dataset
+        img_dataset_show = CustomTensorDataset(tensors=(tensor_x['test'], tensor_y['test']),
+                                                transform=None,
+                                                showing_img=True,
+                                                is_training=False,
+                                                clone_to_three=False)
+        img_loader_show = DataLoader(img_dataset_show, batch_size=1)
+        # iterate
+        for idx, (x, y) in enumerate(img_loader_show):
+            if idx > debug_img:
+                break
 
     # Step3 Transfer to GPU
     # Detect if we have a GPU available
@@ -346,27 +389,32 @@ if __name__ == "__main__":
                 # print("\t",name)
     
     # Observe that all parameters are being optimized
-    optimizer_ft = optim.Adam(params_to_update, lr=1e-3) #optim.SGD(params_to_update, lr=0.001, momentum=0.9)
+    optimizer_ft = optim.Adam(params_to_update, lr=begin_lr) #optim.SGD(params_to_update, lr=0.001, momentum=0.9)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
+    #optim.lr_scheduler.StepLR(optimizer_ft, step_size = 20, gamma=0.33)
 
     # Step5 Loss and train
     # Setup the loss fxn
     criterion = nn.CrossEntropyLoss()
     print(' >> Model Created And Begin Training')
     # Train and evaluate
-    model_ft, hist = train_model(model_ft, dataloaders_dict, criterion, optimizer_ft, num_epochs=num_epochs, is_inception=(model_name=="inception"))
+    model_ft, val_hist, train_hist = \
+        train_model(model_ft, dataloaders_dict, criterion, optimizer_ft, scheduler, num_epochs=num_epochs, is_inception=(model_name=="inception"))
     if not os.path.exists("./model"):
         os.mkdir("./model")
-    torch.save(model_ft.state_dict(), './model/{}-{}.pkl' .format(model_name, date.today())) #model = model_object.load_state_dict(torch.load('params.pkl'))
+    torch.save(model_ft.state_dict(), './model/{}-{}-{}.pkl' .format(model_name, date.today(), ext_params)) 
     
     # show training result
     plt.figure(1)
     plt.title("Validation Accuracy vs. Number of Training Epochs")
     plt.xlabel("Training Epochs")
     plt.ylabel("Validation Accuracy")
-    plt.plot(range(1,num_epochs+1),hist)
-    plt.ylim((0,1.))
+    plt.plot(range(1,num_epochs+1),val_hist,label = "validation")
+    plt.plot(range(1,num_epochs+1),train_hist,label = "training")
+    # plt.ylim((0.6,1.))
     plt.xticks(np.arange(1, num_epochs+1, 1.0))
-    #plt.show()
+    plt.legend()
+    plt.savefig('./model/{}-{}-{}.png' .format(model_name, date.today(), ext_params))
 
     # model_ft.load_state_dict(torch.load('./model/resnet-2019-11-22.pkl'))
     # model_ft = model_ft.to(device)
@@ -378,7 +426,7 @@ if __name__ == "__main__":
     csv_file = np.zeros((test_result.shape[0],2), dtype=np.int32)
     csv_file[:,0] = np.arange(test_result.shape[0])
     csv_file[:,1] = test_result
-    with open("./data/test.csv", "wb") as f:
+    with open("./data/test-{}-{}-{}.csv".format(model_name, date.today(), ext_params), "wb") as f:
         f.write(b'image_id,label\n')
         np.savetxt(f, csv_file.astype(int), fmt='%i', delimiter=",")
     # np.savetxt('./data/test.csv', csv_file, delimiter=',', header='image_id,label')
