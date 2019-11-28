@@ -16,9 +16,14 @@ import torch.optim as optim
 import numpy as np
 from torchvision import models, transforms
 from torch.utils.data import DataLoader
+# from torch.utils.data.distributed import DistributedSampler
+from distributed import DistributedSampler
+import torch.distributed as distributed
+from torch.nn.parallel import DistributedDataParallel as DDP
 import matplotlib.pyplot as plt
 import time
 import os
+from argparse import ArgumentParser
 import copy
 from PIL import Image
 from tqdm import tqdm
@@ -48,13 +53,13 @@ num_classes = 10
 debug_img = 0
 
 # Batch size for training (change depending on how much memory you have)
-batch_size = 16
+batch_size = 256
 
 # Number of epochs to train
-num_epochs = 50
+num_epochs = 100
 
 # begin_lr
-begin_lr = 1e-3
+begin_lr = 2e-3
 
 # extra params
 ext_params = 'lr_decay-{}-bs-{}-ep-{}' .format(begin_lr, batch_size, num_epochs)
@@ -63,7 +68,19 @@ ext_params = 'lr_decay-{}-bs-{}-ep-{}' .format(begin_lr, batch_size, num_epochs)
 #   when True we only update the reshaped layer params
 feature_extract = False
 
-def train_model(model, dataloaders, criterion, optimizer, scheduler=None, num_epochs=15, is_inception=False):
+def parse_args():
+    """
+    Helper function parsing the command line options
+    @retval ArgumentParser
+    """
+    parser = ArgumentParser(description="Training Params")
+
+    parser.add_argument('--dist', 
+                        help='whether to use distributed training', default=False, action='store_true')
+
+    return parser.parse_args()
+
+def train_model(model, dataloaders, criterion, optimizer, scheduler=None, num_epochs=15, dist=False):
     since = time.time()
 
     # validation accuracy
@@ -85,15 +102,16 @@ def train_model(model, dataloaders, criterion, optimizer, scheduler=None, num_ep
             else:
                 model.eval()   # Set model to evaluate mode
 
-            running_loss = 0.0
-            running_corrects = 0
+            sum_loss = torch.tensor(0.)
+            sum_metric = torch.tensor(0.)
+            num_inst = torch.tensor(0.)
 
             # Iterate over data.
             # Another way: dataIter = iter(dataloaders[phase]) then next(dataIter)
             for inputs, labels in dataloaders[phase]:
-                inputs = inputs.to(device)
+                inputs = inputs.cuda()
                 # labels = torch.tensor(labels, dtype=torch.long, device=device)
-                labels = labels.squeeze().long().to(device)
+                labels = labels.squeeze().long().cuda()
                 # labels = labels.long()
                 # labels = Variable(torch.FloatTensor(inputs.size[0]).uniform_(0, 10).long())
 
@@ -105,22 +123,12 @@ def train_model(model, dataloaders, criterion, optimizer, scheduler=None, num_ep
                 # notice the validation set will run this with block but do not set gradients trainable
                 with torch.set_grad_enabled(phase == 'train'):
                     # Get model outputs and calculate loss
-                    # Special case for inception because in training it has an auxiliary output. In train
-                    #   mode we calculate the loss by summing the final output and the auxiliary output
-                    #   but in testing we only consider the final output.
-                    if is_inception and phase == 'train':
-                        # From https://discuss.pytorch.org/t/how-to-optimize-inception-model-with-auxiliary-classifiers/7958
-                        outputs, aux_outputs = model(inputs)
-                        loss1 = criterion(outputs, labels)
-                        loss2 = criterion(aux_outputs, labels)
-                        loss = loss1 + 0.4*loss2
-                    else:
-                        # criterion define the loss function
-                        # calculate the loss also on the validation set
-                        outputs = model(inputs)
-                        loss = criterion(outputs, labels)
-                    # along the batch axis
-                    _, preds = torch.max(outputs, 1)
+                    # criterion define the loss function
+                    # calculate the loss also on the validation set
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
+                    # # along the batch axis
+                    # _, preds = torch.max(outputs, 1)
 
                     # backward + optimize parameters only if in training phase
                     if phase == 'train':
@@ -128,12 +136,24 @@ def train_model(model, dataloaders, criterion, optimizer, scheduler=None, num_ep
                         optimizer.step()
 
                 # statistics
-                running_loss += loss.item() * inputs.size(0)
-                running_corrects += torch.sum(preds == labels.data)
+                sum_loss += loss.item() * inputs.size(0)
+                iter_arr = float((outputs.argmax(dim=1) == labels.data).sum().item()) #torch.sum(preds == labels.data)
+                sum_metric += iter_arr
+                num_inst += outputs.shape[0]
 
-            epoch_loss = running_loss / len(dataloaders[phase].dataset)
-            epoch_acc = running_corrects.double() / len(dataloaders[phase].dataset)
-
+            if dist:
+                num_inst = num_inst.clone().cuda()
+                sum_metric = sum_metric.clone().cuda()
+                sum_loss = sum_loss.clone().cuda()
+                distributed.all_reduce(num_inst, op=distributed.ReduceOp.SUM)
+                distributed.all_reduce(sum_metric, op=distributed.ReduceOp.SUM)
+                distributed.all_reduce(sum_loss, op=distributed.ReduceOp.SUM)
+                epoch_acc = (sum_metric / num_inst).detach().cpu().item()
+                epoch_loss = (sum_loss / num_inst).detach().cpu().item()
+            else:
+                epoch_acc = (sum_metric / num_inst).detach().cpu().item()
+                epoch_loss = (sum_loss / num_inst).detach().cpu().item()
+                
             print('{} Loss: {:.4f} Acc: {:.4f}'.format(phase, epoch_loss, epoch_acc))
 
             # deep copy the model
@@ -219,20 +239,6 @@ def initialize_model(model_name, num_classes, feature_extract=True, use_pretrain
         model_ft.classifier = nn.Linear(num_ftrs, num_classes)
         input_size = 224
 
-    elif model_name == "inception":
-        """ Inception v3
-        Be careful, expects (299,299) sized images and has auxiliary output
-        """
-        model_ft = models.inception_v3(pretrained=use_pretrained)
-        set_parameter_requires_grad(model_ft, feature_extract)
-        # Handle the auxilary net
-        num_ftrs = model_ft.AuxLogits.fc.in_features
-        model_ft.AuxLogits.fc = nn.Linear(num_ftrs, num_classes)
-        # Handle the primary net
-        num_ftrs = model_ft.fc.in_features
-        model_ft.fc = nn.Linear(num_ftrs,num_classes)
-        input_size = 299
-
     elif model_name == "LeNet":
         input_size = 28
         model_ft = LeNet()
@@ -248,11 +254,12 @@ def initialize_model(model_name, num_classes, feature_extract=True, use_pretrain
     return model_ft, input_size
 
 def inference(model, dataloader):
+    print(' Begining testing')
     since = time.time()
 
     test_result = None
     for inputs, _ in dataloader:
-        inputs = inputs.to(device)
+        inputs = inputs.cuda()
 
         # forward
         with torch.set_grad_enabled(False):
@@ -269,16 +276,30 @@ def inference(model, dataloader):
     return test_result
 
 if __name__ == "__main__":
+    args = parse_args()
+    ext_params += '-dist-{}' .format(args.dist)
     # Step1 Model:
     # Initialize the model for this run
     model_ft, input_size = initialize_model(model_name, num_classes, feature_extract, use_pretrained=True)
 
-    # Print the model we just instantiated
-    # print(model_ft)
-
+    if args.dist:
+        distributed.init_process_group(backend='nccl', init_method='env://')
+        local_rank = int(os.environ.get('LOCAL_RANK') or 0)
+        world_size = int(os.environ.get('WORLD_SIZE') or 1)
+        torch.cuda.set_device(local_rank)
+        model_ft = model_ft.cuda()
+        model_ft = DDP(model_ft, device_ids=[local_rank], output_device=local_rank)
+        print(" >> Distribute the model")
+    else:
+        local_rank = int(os.environ.get('LOCAL_RANK') or 0)
+        torch.cuda.set_device(local_rank)
+        model_ft.cuda()
+        
     # Step2 Dataset:
     # Data augmentation and normalization function for training
     # Just normalization for validation
+    print(" >> Initializing Datasets and Dataloaders")
+
     train_data = np.load(train_data_dir)
     train_gt = np.genfromtxt(train_gt_dir, delimiter=',')
     train_gt = train_gt[1:,]
@@ -288,7 +309,25 @@ if __name__ == "__main__":
     test_data = np.load(test_data_dir)
     mean = np.mean(test_data.ravel())
     std = np.std(test_data.ravel())
+    
+    train_tensor_x = torch.stack([torch.Tensor(i) for i in train_data])
+    train_tensor_x = train_tensor_x.reshape((-1, 1, 28, 28))
 
+    train_tensor_y = torch.stack([torch.Tensor(np.asarray(i[1])) for i in train_gt])
+    train_tensor_y = train_tensor_y.reshape(train_tensor_y.shape[0], 1)
+
+    val_tensor_x = torch.stack([torch.Tensor(i) for i in val_data])
+    val_tensor_x = val_tensor_x.reshape((-1, 1, 28, 28))
+
+    val_tensor_y = torch.stack([torch.Tensor(np.asarray(i[1])) for i in val_gt])
+    val_tensor_y = val_tensor_y.reshape(val_tensor_y.shape[0], 1)
+
+    test_tensor_x = torch.stack([torch.Tensor(i) for i in test_data])
+    test_tensor_x = test_tensor_x.reshape((-1, 1, 28, 28))
+
+    tensor_x={'train':train_tensor_x, 'val':val_tensor_x, 'test':test_tensor_x}
+    tensor_y={'train':train_tensor_y, 'val':val_tensor_y, 'test':None}
+    
     data_transforms = {
         'train': transforms.Compose([
             transforms.ToPILImage(),
@@ -316,40 +355,33 @@ if __name__ == "__main__":
         ]),
     }
 
-    print(" >> Initializing Datasets and Dataloaders")
-    
-    train_tensor_x = torch.stack([torch.Tensor(i) for i in train_data])
-    train_tensor_x = train_tensor_x.reshape((-1, 1, 28, 28))
-    # train_tensor_x = train_data.reshape((-1, 1, 28, 28))
-    # train_tensor_x = torch.tensor(train_tensor_x)
-
-    train_tensor_y = torch.stack([torch.Tensor(np.asarray(i[1])) for i in train_gt])
-    train_tensor_y = train_tensor_y.reshape(train_tensor_y.shape[0], 1)
-
-    val_tensor_x = torch.stack([torch.Tensor(i) for i in val_data])
-    val_tensor_x = val_tensor_x.reshape((-1, 1, 28, 28))
-
-    val_tensor_y = torch.stack([torch.Tensor(np.asarray(i[1])) for i in val_gt])
-    val_tensor_y = val_tensor_y.reshape(val_tensor_y.shape[0], 1)
-
-    test_tensor_x = torch.stack([torch.Tensor(i) for i in test_data])
-    test_tensor_x = test_tensor_x.reshape((-1, 1, 28, 28))
-
-    tensor_x={'train':train_tensor_x, 'val':val_tensor_x, 'test':test_tensor_x}
-    tensor_y={'train':train_tensor_y, 'val':val_tensor_y, 'test':None}
-
     # Create valing and validation datasets
     image_datasets_dict = {phase: CustomTensorDataset(tensors=(tensor_x[phase], tensor_y[phase]), 
                                                         transform=data_transforms[phase], 
                                                         showing_img=False,
                                                         is_training=False if phase=='test' else True, 
                                                         clone_to_three=False) for phase in ['train', 'val', 'test']}
-    # Create training and validation dataloaders
-    dataloaders_dict = {phase: DataLoader(image_datasets_dict[phase], 
-                                            batch_size=batch_size, 
-                                            shuffle=False if phase=='test' else True, 
-                                            num_workers=4) for phase in ['train', 'val', 'test']}
-
+    if args.dist:
+        datasampler_dict = {phase: DistributedSampler(dataset=image_datasets_dict[phase],
+                                                        num_replicas=world_size, 
+                                                        rank=local_rank,
+                                                        shuffle=True) for phase in ['train', 'val']}
+    
+        # Create training and validation dataloaders
+        dataloaders_dict = {phase: DataLoader(image_datasets_dict[phase], 
+                                                batch_size=batch_size,
+                                                sampler=datasampler_dict[phase], 
+                                                num_workers=4) for phase in ['train', 'val']}
+        dataloaders_dict['test'] = DataLoader(image_datasets_dict['test'], 
+                                                batch_size=batch_size,
+                                                shuffle=False,
+                                                num_workers=4)
+    else:
+        # Create training and validation dataloaders
+        dataloaders_dict = {phase: DataLoader(image_datasets_dict[phase], 
+                                                batch_size=batch_size,
+                                                shuffle=False if phase=='test' else True, 
+                                                num_workers=4) for phase in ['train', 'val', 'test']}
     if debug_img:# debug the dataset
         img_dataset_show = CustomTensorDataset(tensors=(tensor_x['test'], tensor_y['test']),
                                                 transform=None,
@@ -361,12 +393,6 @@ if __name__ == "__main__":
         for idx, (x, y) in enumerate(img_loader_show):
             if idx > debug_img:
                 break
-
-    # Step3 Transfer to GPU
-    # Detect if we have a GPU available
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    # Send the model to GPU
-    model_ft = model_ft.to(device)
 
     # Step4 Optimizer
     # Gather the parameters to be optimized/updated in this run. If we are
@@ -399,26 +425,29 @@ if __name__ == "__main__":
     print(' >> Model Created And Begin Training')
     # Train and evaluate
     model_ft, val_hist, train_hist = \
-        train_model(model_ft, dataloaders_dict, criterion, optimizer_ft, scheduler, num_epochs=num_epochs, is_inception=(model_name=="inception"))
+        train_model(model_ft, dataloaders_dict, criterion, optimizer_ft, scheduler, num_epochs=num_epochs, dist=args.dist)
     if not os.path.exists("./model"):
         os.mkdir("./model")
     torch.save(model_ft.state_dict(), './model/{}-{}-{}.pkl' .format(model_name, date.today(), ext_params)) 
     
     # show training result
-    plt.figure(1)
-    plt.title("Validation Accuracy vs. Number of Training Epochs")
-    plt.xlabel("Training Epochs")
-    plt.ylabel("Validation Accuracy")
-    plt.plot(range(1,num_epochs+1),val_hist,label = "validation")
-    plt.plot(range(1,num_epochs+1),train_hist,label = "training")
-    # plt.ylim((0.6,1.))
-    plt.xticks(np.arange(1, num_epochs+1, 1.0))
-    plt.legend()
-    plt.savefig('./model/{}-{}-{}.png' .format(model_name, date.today(), ext_params))
+    if not args.dist or (args.dist and local_rank == 0):
+        plt.figure(1)
+        plt.title("Validation Accuracy vs. Number of Training Epochs")
+        plt.xlabel("Training Epochs")
+        plt.ylabel("Validation Accuracy")
+        plt.plot(range(1,num_epochs+1),val_hist,label = "validation")
+        plt.plot(range(1,num_epochs+1),train_hist,label = "training")
+        # plt.ylim((0.6,1.))
+        plt.xticks(np.arange(1, num_epochs+1, 1.0))
+        plt.legend()
+        plt.savefig('./model/{}-{}-{}.png' .format(model_name, date.today(), ext_params))
+        # print(' >> Validation history {}\r\n Training history {}'.format(val_hist, train_hist))
 
     # model_ft.load_state_dict(torch.load('./model/resnet-2019-11-22.pkl'))
     # model_ft = model_ft.to(device)
     # run test
+    
     model_ft.eval()
     test_result = inference(model_ft, dataloaders_dict['test'])
     test_result = test_result.cpu().detach().numpy()
@@ -426,7 +455,8 @@ if __name__ == "__main__":
     csv_file = np.zeros((test_result.shape[0],2), dtype=np.int32)
     csv_file[:,0] = np.arange(test_result.shape[0])
     csv_file[:,1] = test_result
-    with open("./data/test-{}-{}-{}.csv".format(model_name, date.today(), ext_params), "wb") as f:
-        f.write(b'image_id,label\n')
-        np.savetxt(f, csv_file.astype(int), fmt='%i', delimiter=",")
-    # np.savetxt('./data/test.csv', csv_file, delimiter=',', header='image_id,label')
+    if not args.dist or (args.dist and local_rank == 0):
+        with open("./data/test-{}-{}-{}.csv".format(model_name, date.today(), ext_params), "wb") as f:
+            f.write(b'image_id,label\n')
+            np.savetxt(f, csv_file.astype(int), fmt='%i', delimiter=",")
+        # print(' >> Save model to "./model/{}-{}-{}.pkl"' .format(model_name, date.today(), ext_params))

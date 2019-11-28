@@ -14,8 +14,20 @@
 - [x] Try LeNet and other simpler model.
 - [x] Write a model myself, e.g. rewrite the resnet-18 to adapt to my input? What about the batchNorm Layer and Frozon?
 - [ ] Train LR_Scheduler with warming up, at least a decaying lr (it seems the validation loss decay really slow.?
-- [x] A better dataArgument with noisy padding or else. And if Need Normalize?
-- [ ] How to deal with the problem that the loss of trainset with splitting validation set
+- [ ] How about trying the AdamW?
+- [x] A better dataArgument with noisy padding or else. And if Need Normalize? Yes, needed.
+- [ ] How to deal with the problem that the loss of trainset with splitting validation set. Try to solve with CrossValidation
+- [ ] Refer to CNN tricks, and see if any modification on Model Structure.
+- [x] Finish a distributed training version. But using MultiGPU seems to loss about 1% accuracy.
+
+## Usage
+```sh
+# Single GPU
+$ dist_run.sh 1 main.py
+# Multi GPU
+# Using 4 GPU
+$ dist_run.sh 4 main.py --dist
+```
 
 <!-- # Leaf Classification and Vein Segmentation
 
