@@ -55,10 +55,10 @@ num_classes = 10
 debug_img = 0
 
 # Batch size for training (change depending on how much memory you have)
-batch_size = 256
+batch_size = 64
 
 # folds
-k_folds = 10
+k_folds = 5
 
 # Number of epochs to train
 num_epochs = 50
@@ -328,23 +328,15 @@ if __name__ == "__main__":
     # Step1 Model:
     # Initialize the model for this run
     model_ft, input_size = initialize_model(model_name, num_classes, feature_extract, use_pretrained=True)
-
     if args.dist:
         distributed.init_process_group(backend='nccl', init_method='env://')
         local_rank = int(os.environ.get('LOCAL_RANK') or 0)
         world_size = int(os.environ.get('WORLD_SIZE') or 1)
         torch.cuda.set_device(local_rank)
-        model_ft = model_ft.cuda()
-        model_ft = DDP(model_ft, device_ids=[local_rank], output_device=local_rank)
-        print(" >> Distribute the model")
     else:
         local_rank = int(os.environ.get('LOCAL_RANK') or 0)
         torch.cuda.set_device(local_rank)
-        model_ft.cuda()
-        
-    # Step2 Dataset:
-    # Data augmentation and normalization function for training
-    # Just normalization for validation
+
     print(" >> Initializing Datasets and Dataloaders")
     all_data = np.load(src_data_dir)
     all_gt = np.genfromtxt(src_gt_dir, delimiter=',')
@@ -430,34 +422,33 @@ if __name__ == "__main__":
             if idx > debug_img:
                 break
 
-    # Step4 Optimizer
-    # Gather the parameters to be optimized/updated in this run. If we are
-    #  finetuning we will be updating all parameters. However, if we are
-    #  doing feature extract method, we will only update the parameters
-    #  that we have just initialized, i.e. the parameters with requires_grad
-    #  is True.
-    
-    if feature_extract:
-        params_to_update = []
-        for name,param in model_ft.named_parameters():
-            if param.requires_grad == True:
-                params_to_update.append(param)
-                # print("\t",name)
-    else:
-        params_to_update = model_ft.parameters()
-        for name,param in model_ft.named_parameters():
-            if param.requires_grad == True:
-                pass
-                # print("\t",name)
+    # if feature_extract:
+    #     params_to_update = []
+    #     for name,param in model_ft.named_parameters():
+    #         if param.requires_grad == True:
+    #             params_to_update.append(param)
+    #             # print("\t",name)
+    # else:
+    #     params_to_update = model_ft.parameters()
+    #     for name,param in model_ft.named_parameters():
+    #         if param.requires_grad == True:
+    #             pass
+    #             # print("\t",name)
     
     if k_folds == 0:
+        if args.dist:
+            model_ft = model_ft.cuda()
+            model_ft = DDP(model_ft, device_ids=[local_rank], output_device=local_rank)
+            print(" >> Distribute the model")
+        else:
+            model_ft.cuda()
+
+        params_to_update = model_ft.parameters()
         # Observe that all parameters are being optimized
         optimizer_ft = optim.Adam(params_to_update, lr=begin_lr) #optim.SGD(params_to_update, lr=0.001, momentum=0.9)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
         #optim.lr_scheduler.StepLR(optimizer_ft, step_size = 20, gamma=0.33)
 
-        # Step5 Loss and train
-        # Setup the loss fxn
         criterion = nn.CrossEntropyLoss()
         print(' >> Model Created And Begin Training')
         # Train and evaluate
@@ -480,26 +471,31 @@ if __name__ == "__main__":
             plt.savefig('./model/{}-{}-{}.png' .format(model_name, date.today(), ext_params))
             # print(' >> Validation history {}\r\n Training history {}'.format(val_hist, train_hist))
         
-    else:
-        init_model_wts = copy.deepcopy(model_ft.state_dict())
-        optimizer_ft = optim.Adam(params_to_update, lr=begin_lr) #optim.SGD(params_to_update, lr=0.001, momentum=0.9)
-        init_optim_wts = copy.deepcopy(optimizer_ft.state_dict())
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
-        #optim.lr_scheduler.StepLR(optimizer_ft, step_size = 20, gamma=0.33)
-        criterion = nn.CrossEntropyLoss()
+        model_ft.eval()
+        test_result = inference(model_ft, test_dataloader)
+        _, preds = torch.max(test_result, 1)
 
-        model_ft_list = []
+    else:
         avr_val_acc = 0.0
         avr_train_acc = 0.0
+        all_test = None
         for fold in range(k_folds):
-
-            # Step5 Loss and train
-            # Setup the loss fxn
-            
-            print(' >> Model Created And Begin Training for folds-{}'.format(fold))
             # Train and evaluate
-            model_ft.load_state_dict(init_model_wts)
-            optimizer_ft.load_state_dict(init_optim_wts)
+            model_ft, input_size = initialize_model(model_name, num_classes, feature_extract, use_pretrained=True)
+
+            if args.dist:
+                model_ft = model_ft.cuda()
+                model_ft = DDP(model_ft, device_ids=[local_rank], output_device=local_rank)
+                print(" >> Distribute the model")
+            else:
+                model_ft.cuda()
+
+            params_to_update = model_ft.parameters()
+            optimizer_ft = optim.Adam(params_to_update, lr=begin_lr) #optim.SGD(params_to_update, lr=0.001, momentum=0.9)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
+            #optim.lr_scheduler.StepLR(optimizer_ft, step_size = 20, gamma=0.33)
+            criterion = nn.CrossEntropyLoss()
+            print(' >> Model Created And Begin Training for folds-{}'.format(fold))
             model_ft, val_hist, train_hist = \
                 train_model(model_ft, dataloaders_dict, criterion, optimizer_ft, scheduler, num_epochs=num_epochs, dist=args.dist)
             
@@ -508,31 +504,21 @@ if __name__ == "__main__":
                     os.mkdir("./model/{}-{}-{}".format(model_name, date.today(), ext_params))
                 torch.save(model_ft.state_dict(), './model/{}-{}-{}/models-fold-{}.pkl' .format(model_name, date.today(), ext_params, fold)) 
             
-            model_ft_list.append(copy.deepcopy(model_ft.state_dict()))
-            avr_val_acc = max(val_hist)
-            avr_train_acc = max(train_hist)
-        print(' >> Final average training accuracy: {} validation accuracy: {}' .format(avr_train_acc/k_folds, avr_val_acc/k_folds))
-    
-    # model_ft.load_state_dict(torch.load('./model/resnet-2019-11-22.pkl'))
-    # model_ft = model_ft.to(device)
-    # run test
-    if k_folds == 0:
-        model_ft.eval()
-        test_result = inference(model_ft, test_dataloader)
-        _, preds = torch.max(test_result, 1)
-    else:
-        model_ft.eval()
-        all_test = None
-        for fold in range(k_folds):
-            model_ft.load_state_dict(model_ft_list[fold])
+            model_ft.eval()
             test_result = inference(model_ft, test_dataloader)
             test_result = nn.functional.softmax(test_result, dim=1)
             if all_test is not None:
                 all_test = torch.add(all_test, test_result)
             else:
                 all_test = test_result
+            avr_val_acc += max(val_hist)
+            avr_train_acc += max(train_hist)
+
         _, preds = torch.max(all_test, 1)
+        print(' >> Final average training accuracy: {} validation accuracy: {}' .format(avr_train_acc/k_folds, avr_val_acc/k_folds))
     
+    # model_ft.load_state_dict(torch.load('./model/resnet-2019-11-22.pkl'))
+    # model_ft = model_ft.to(device)    
     preds = preds.cpu().detach().numpy()
     # test_result = test_result.reshape((test_result.shape[0],1))
     csv_file = np.zeros((preds.shape[0],2), dtype=np.int32)

@@ -30,6 +30,8 @@ $ dist_run.sh 1 main.py
 $ dist_run.sh 4 main.py --dist
 ```
 
+## Notication
+注意多GPU训练时，如果你需要k-folds cross validation，也就是说，你需要训多个一样的模型的时候，如果DDP在前，你在每个fold里去load init params是不对的，因为你DDP到各个进程在前，没有broadcast init params。我的解决方案是每个fold都init一个新的model，然后DDP，保险起见，我optimizer也选用New的方式，而不是load init params。
 <!-- # Leaf Classification and Vein Segmentation
 
 *Class Assignment in junior year* : see [Requirement](img/requirement.pdf)  
