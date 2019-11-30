@@ -57,14 +57,14 @@ class BasicBlock(nn.Module):
 class ResNet(nn.Module):
 
     def __init__(self, block, layers, num_classes=None, expose_stages=None, dilations=None, stride_in_1x1=False):
-        self.inplanes = 32
+        self.inplanes = 64
         super(ResNet, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1,
+        self.conv1 = nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1,
                                bias=False)
-        self.bn1 = nn.BatchNorm2d(32)
+        self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
 
-        layers_planes = [32, 64, 128, 256]
+        layers_planes = [64, 128, 256, 512]
         layers_strides = [1, 2, 2, 2]
         layers_dilations = dilations if dilations is not None else [1, 1, 1, 1]
         for i, dilation in enumerate(layers_dilations):
@@ -79,7 +79,7 @@ class ResNet(nn.Module):
         self.has_fc_head = True
         if self.has_fc_head:
             self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-            self.fc = nn.Linear(256, num_classes)
+            self.fc = nn.Linear(512, num_classes)
 
         # params_init
         for m in self.modules():

@@ -13,8 +13,8 @@
 - [x] Take a look at what the hell the imgs are.
 - [x] Try LeNet and other simpler model.
 - [x] Write a model myself, e.g. rewrite the resnet-18 to adapt to my input? What about the batchNorm Layer and Frozon?
-- [ ] Train LR_Scheduler with warming up, at least a decaying lr (it seems the validation loss decay really slow.?
-- [ ] How about trying the AdamW?
+- [x] Train LR_Scheduler with warming up, at least a decaying lr (it seems the validation loss decay really slow.?
+- [x] How about trying the AdamW?
 - [x] A better dataArgument with noisy padding or else. And if Need Normalize? Yes, needed.
 - [x] How to deal with the problem that the loss of trainset with splitting validation set. Try to solve with CrossValidation. It seems the Crossvalidation is not using all the dataset. Instead, it will try number k models to more accurately to evaluate the model (because I almost get an average evaluation over whole dataset.) After you choose the best hyperParams setting, you can run the model on whole set.
 - [ ] Refer to CNN tricks, and see if any modification on Model Structure.
@@ -24,10 +24,10 @@
 ## Usage
 ```sh
 # Single GPU
-$ dist_run.sh 1 main.py
+$ dist_run.sh 1 GPU_IDX main.py
 # Multi GPU
 # Using 4 GPU
-$ dist_run.sh 4 main.py --dist
+$ dist_run.sh 4 0 main.py --dist
 ```
 
 ## Notication

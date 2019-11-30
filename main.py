@@ -30,7 +30,8 @@ from tqdm import tqdm
 from datetime import date
 from MyDataset import CustomTensorDataset
 from LeNet import LeNet
-from ResNet import ResNet18
+from ResNet import ResNet18, ResNet34
+from optimization import WarmupLinearSchedule, AdamW
 
 print("PyTorch Version: ",torch.__version__)
 
@@ -55,19 +56,26 @@ num_classes = 10
 debug_img = 0
 
 # Batch size for training (change depending on how much memory you have)
-batch_size = 64
+batch_size = 512
 
 # folds
-k_folds = 5
+k_folds = 0
 
 # Number of epochs to train
 num_epochs = 50
 
 # begin_lr
-begin_lr = 1e-3
+begin_lr = 2e-1
+
+# lr_schedule
+lr_schedule = 'triangle'  #plateau
+
+# optimizer
+optim_type = 'SGD'
 
 # extra params
-ext_params = 'lr_decay-{}-bs-{}-ep-{}-folds-{}' .format(begin_lr, batch_size, num_epochs, k_folds)
+ext_params = 'lr_decay-{}-bs-{}-ep-{}-folds-{}-lrs-{}-optim-{}' \
+            .format(begin_lr, batch_size, num_epochs, k_folds, lr_schedule, optim_type)
 
 # Flag for feature extracting. When False, we finetune the whole model,
 #   when True we only update the reshaped layer params
@@ -113,7 +121,9 @@ def train_model(model, dataloaders, criterion, optimizer, scheduler=None, num_ep
 
             # Iterate over data.
             # Another way: dataIter = iter(dataloaders[phase]) then next(dataIter)
-            for inputs, labels in dataloaders[phase]:
+            for nbatch, (inputs, labels) in enumerate(dataloaders[phase]):
+                global_steps = len(dataloaders[phase]) * epoch + nbatch
+                os.environ['global_steps'] = str(global_steps)
                 inputs = inputs.cuda()
                 # labels = torch.tensor(labels, dtype=torch.long, device=device)
                 labels = labels.squeeze().long().cuda()
@@ -138,7 +148,11 @@ def train_model(model, dataloaders, criterion, optimizer, scheduler=None, num_ep
                     # backward + optimize parameters only if in training phase
                     if phase == 'train':
                         loss.backward()
+                        if lr_schedule == 'triangle':
+                            scheduler.step()
                         optimizer.step()
+                        # for param_group in optimizer.param_groups:
+                        #     print('{} : {}'.format(len(dataloaders[phase]) * epoch + nbatch, param_group['lr']))
 
                 # statistics
                 sum_loss += loss.item() * inputs.size(0)
@@ -171,7 +185,7 @@ def train_model(model, dataloaders, criterion, optimizer, scheduler=None, num_ep
             else:
                 train_acc_history.append(epoch_acc)
 
-        if scheduler:
+        if lr_schedule == 'plateau':
             scheduler.step(lr_decay_metric)
 
     time_elapsed = time.time() - since
@@ -251,6 +265,10 @@ def initialize_model(model_name, num_classes, feature_extract=True, use_pretrain
     elif model_name == "resnet_adpat":
         input_size = 28
         model_ft = ResNet18(num_classes)
+
+    elif model_name == "resnet_adpat34":
+        input_size = 28
+        model_ft = ResNet34(num_classes)
 
     else:
         print("Invalid model name, exiting...")
@@ -334,6 +352,7 @@ if __name__ == "__main__":
         world_size = int(os.environ.get('WORLD_SIZE') or 1)
         torch.cuda.set_device(local_rank)
     else:
+        world_size = 1
         local_rank = int(os.environ.get('LOCAL_RANK') or 0)
         torch.cuda.set_device(local_rank)
 
@@ -381,7 +400,7 @@ if __name__ == "__main__":
         val_gt = np.genfromtxt(validation_gt_dir, delimiter=',')
         val_gt = val_gt[1:,]
         
-        dataloaders_dict = dataloaders_dict_create(data_transforms, train_data, train_gt, val_data, val_gt, args.dist)
+        dataloaders_dict = dataloaders_dict_create(data_transforms, train_data, train_gt, val_data, val_gt, args.dist, local_rank, world_size)
 
     else:
         all_length = len(all_data)
@@ -445,10 +464,30 @@ if __name__ == "__main__":
 
         params_to_update = model_ft.parameters()
         # Observe that all parameters are being optimized
-        optimizer_ft = optim.Adam(params_to_update, lr=begin_lr) #optim.SGD(params_to_update, lr=0.001, momentum=0.9)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
-        #optim.lr_scheduler.StepLR(optimizer_ft, step_size = 20, gamma=0.33)
+        if optim_type == 'Adam':
+            optimizer_ft = optim.Adam(params_to_update, lr=begin_lr)
+        if optim_type == 'SGD':
+            optimizer_ft = optim.SGD(params_to_updata, lr=begin_lr, momentum=0.9)
+        else:
+            optimizer_ft = AdamW(params_to_update, lr=begin_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-2)
 
+        if lr_schedule == 'plateau':
+            # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,
+            #                                                         mode='min',
+            #                                                         factor=0.2,
+            #                                                         patience=1,
+            #                                                         verbose=False,
+            #                                                         threshold=1e-4,
+            #                                                         threshold_mode='rel',
+            #                                                         cooldown=2,
+            #                                                         min_lr=0,
+            #                                                         eps=1e-8)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
+        else:
+            scheduler = WarmupLinearSchedule(optimizer_ft,
+                                            warmup_steps=500,
+                                            t_total=int(num_epochs * len(dataloaders_dict['train'])),
+                                            last_epoch = -1)
         criterion = nn.CrossEntropyLoss()
         print(' >> Model Created And Begin Training')
         # Train and evaluate
@@ -491,9 +530,27 @@ if __name__ == "__main__":
                 model_ft.cuda()
 
             params_to_update = model_ft.parameters()
-            optimizer_ft = optim.Adam(params_to_update, lr=begin_lr) #optim.SGD(params_to_update, lr=0.001, momentum=0.9)
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
-            #optim.lr_scheduler.StepLR(optimizer_ft, step_size = 20, gamma=0.33)
+            if optim_type == 'Adam':
+                optimizer_ft = optim.Adam(params_to_update, lr=begin_lr)
+            else:
+                optimizer_ft = AdamW(params_to_update, lr=begin_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-2)
+            if lr_schedule == 'plateau':
+                # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,
+                #                                                         mode='min',
+                #                                                         factor=0.2,
+                #                                                         patience=1,
+                #                                                         verbose=False,
+                #                                                         threshold=1e-4,
+                #                                                         threshold_mode='rel',
+                #                                                         cooldown=2,
+                #                                                         min_lr=0,
+                #                                                         eps=1e-8)
+                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
+            else:
+                scheduler = WarmupLinearSchedule(optimizer_ft,
+                                                warmup_steps=2000,
+                                                t_total=int(num_epochs * len(dataloaders_dict['train'])),
+                                                last_epoch = -1)
             criterion = nn.CrossEntropyLoss()
             print(' >> Model Created And Begin Training for folds-{}'.format(fold))
             model_ft, val_hist, train_hist = \

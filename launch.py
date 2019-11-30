@@ -139,6 +139,7 @@ def parse_args():
                              "If set to True, the script will not pass "
                              "--local_rank as argument, and will instead set LOCAL_RANK.")
 
+    parser.add_argument("--single_gpu_idx", default=0, type=int)
     # positional
     parser.add_argument("training_script", type=str,
                         help="The full path to the single GPU training "
@@ -166,24 +167,33 @@ def main():
 
     processes = []
 
-    for local_rank in range(0, args.nproc_per_node):
-        # each process's rank
-        dist_rank = args.nproc_per_node * args.node_rank + local_rank
-        current_env["RANK"] = str(dist_rank)
-        current_env["LOCAL_RANK"] = str(local_rank)
+    if args.nproc_per_node > 1:
+        for local_rank in range(0, args.nproc_per_node):
+            # each process's rank
+            dist_rank = args.nproc_per_node * args.node_rank + local_rank
+            current_env["RANK"] = str(dist_rank)
+            current_env["LOCAL_RANK"] = str(local_rank)
 
-        # # spawn the processes
-        # if args.use_env:
-        #     cmd = [sys.executable, "-u",
-        #            args.training_script] + args.training_script_args
-        # else:
-        #     cmd = [sys.executable,
-        #            "-u",
-        #            args.training_script,
-        #            "--local_rank={}".format(local_rank)] + args.training_script_args
+            # # spawn the processes
+            # if args.use_env:
+            #     cmd = [sys.executable, "-u",
+            #            args.training_script] + args.training_script_args
+            # else:
+            #     cmd = [sys.executable,
+            #            "-u",
+            #            args.training_script,
+            #            "--local_rank={}".format(local_rank)] + args.training_script_args
 
+            cmd = [sys.executable, "-u",
+                args.training_script] + args.training_script_args
+
+            process = subprocess.Popen(cmd, env=current_env)
+            processes.append(process)
+    else:
+        current_env["RANK"] = str(args.single_gpu_idx)
+        current_env["LOCAL_RANK"] = str(args.single_gpu_idx)
         cmd = [sys.executable, "-u",
-               args.training_script] + args.training_script_args
+                args.training_script] + args.training_script_args
 
         process = subprocess.Popen(cmd, env=current_env)
         processes.append(process)
