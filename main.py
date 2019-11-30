@@ -42,6 +42,8 @@ train_gt_dir = r"./data/train.csv"
 validation_data_dir = r"./data/validation.npy"
 validation_gt_dir = r"./data/validation.csv"
 test_data_dir = r"./data/test.npy"
+src_data_dir = r'./data/src.npy'
+src_gt_dir = r'./data/src.csv'
 
 # Models to choose from [resnet, alexnet, vgg, squeezenet, densenet, inception]
 model_name = "resnet_adpat"
@@ -55,14 +57,17 @@ debug_img = 0
 # Batch size for training (change depending on how much memory you have)
 batch_size = 256
 
+# folds
+k_folds = 10
+
 # Number of epochs to train
-num_epochs = 100
+num_epochs = 50
 
 # begin_lr
-begin_lr = 2e-3
+begin_lr = 1e-3
 
 # extra params
-ext_params = 'lr_decay-{}-bs-{}-ep-{}' .format(begin_lr, batch_size, num_epochs)
+ext_params = 'lr_decay-{}-bs-{}-ep-{}-folds-{}' .format(begin_lr, batch_size, num_epochs, k_folds)
 
 # Flag for feature extracting. When False, we finetune the whole model,
 #   when True we only update the reshaped layer params
@@ -264,16 +269,58 @@ def inference(model, dataloader):
         # forward
         with torch.set_grad_enabled(False):
             outputs = model(inputs)
-            _, preds = torch.max(outputs, 1)
             if test_result is not None:
-                test_result = torch.cat((test_result, preds))
+                test_result = torch.cat((test_result, outputs))
             else:
-                test_result = preds
+                test_result = outputs
 
     time_elapsed = time.time() - since
     print(' Testing complete in {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
 
     return test_result
+
+def dataloaders_dict_create(data_transforms, train_data, train_gt, val_data, val_gt, dist=True, local_rank=0, world_size=1):
+    train_tensor_x = torch.stack([torch.Tensor(i) for i in train_data])
+    train_tensor_x = train_tensor_x.reshape((-1, 1, 28, 28))
+
+    train_tensor_y = torch.stack([torch.Tensor(np.asarray(i[1])) for i in train_gt])
+    train_tensor_y = train_tensor_y.reshape(train_tensor_y.shape[0], 1)
+
+    val_tensor_x = torch.stack([torch.Tensor(i) for i in val_data])
+    val_tensor_x = val_tensor_x.reshape((-1, 1, 28, 28))
+
+    val_tensor_y = torch.stack([torch.Tensor(np.asarray(i[1])) for i in val_gt])
+    val_tensor_y = val_tensor_y.reshape(val_tensor_y.shape[0], 1)
+
+    tensor_x={'train':train_tensor_x, 'val':val_tensor_x}
+    tensor_y={'train':train_tensor_y, 'val':val_tensor_y}
+    
+    # Create valing and validation datasets
+    image_datasets_dict = {phase: CustomTensorDataset(tensors=(tensor_x[phase], tensor_y[phase]), 
+                                                        transform=data_transforms[phase], 
+                                                        showing_img=False,
+                                                        is_training=True, 
+                                                        clone_to_three=False) for phase in ['train', 'val']}
+    if dist:
+        datasamplers_dict = {phase: DistributedSampler(dataset=image_datasets_dict[phase],
+                                                        num_replicas=world_size, 
+                                                        rank=local_rank,
+                                                        shuffle=True) for phase in ['train', 'val']}
+    
+        # Create training and validation dataloaders
+        dataloaders_dict = {phase: DataLoader(image_datasets_dict[phase], 
+                                                batch_size=batch_size,
+                                                sampler=datasamplers_dict[phase], 
+                                                num_workers=4) for phase in ['train', 'val']}
+
+    else:
+        # Create training and validation dataloaders
+        dataloaders_dict = {phase: DataLoader(image_datasets_dict[phase], 
+                                                batch_size=batch_size,
+                                                shuffle=True, 
+                                                num_workers=4) for phase in ['train', 'val']}
+    return dataloaders_dict
+
 
 if __name__ == "__main__":
     args = parse_args()
@@ -299,35 +346,14 @@ if __name__ == "__main__":
     # Data augmentation and normalization function for training
     # Just normalization for validation
     print(" >> Initializing Datasets and Dataloaders")
-
-    train_data = np.load(train_data_dir)
-    train_gt = np.genfromtxt(train_gt_dir, delimiter=',')
-    train_gt = train_gt[1:,]
-    val_data = np.load(validation_data_dir)
-    val_gt = np.genfromtxt(validation_gt_dir, delimiter=',')
-    val_gt = val_gt[1:,]
+    all_data = np.load(src_data_dir)
+    all_gt = np.genfromtxt(src_gt_dir, delimiter=',')
+    all_gt = all_gt[1:,]
+    train_mean = np.mean(all_data.ravel())
+    train_std = np.std(all_data.ravel())
     test_data = np.load(test_data_dir)
-    mean = np.mean(test_data.ravel())
-    std = np.std(test_data.ravel())
-    
-    train_tensor_x = torch.stack([torch.Tensor(i) for i in train_data])
-    train_tensor_x = train_tensor_x.reshape((-1, 1, 28, 28))
-
-    train_tensor_y = torch.stack([torch.Tensor(np.asarray(i[1])) for i in train_gt])
-    train_tensor_y = train_tensor_y.reshape(train_tensor_y.shape[0], 1)
-
-    val_tensor_x = torch.stack([torch.Tensor(i) for i in val_data])
-    val_tensor_x = val_tensor_x.reshape((-1, 1, 28, 28))
-
-    val_tensor_y = torch.stack([torch.Tensor(np.asarray(i[1])) for i in val_gt])
-    val_tensor_y = val_tensor_y.reshape(val_tensor_y.shape[0], 1)
-
-    test_tensor_x = torch.stack([torch.Tensor(i) for i in test_data])
-    test_tensor_x = test_tensor_x.reshape((-1, 1, 28, 28))
-
-    tensor_x={'train':train_tensor_x, 'val':val_tensor_x, 'test':test_tensor_x}
-    tensor_y={'train':train_tensor_y, 'val':val_tensor_y, 'test':None}
-    
+    test_mean = np.mean(test_data.ravel())
+    test_std = np.std(test_data.ravel())
     data_transforms = {
         'train': transforms.Compose([
             transforms.ToPILImage(),
@@ -336,7 +362,7 @@ if __name__ == "__main__":
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize([74.6176043792517/255.0], [85.28552921727005/255.0])
+            transforms.Normalize([train_mean/255.0], [train_std/255.0])
             # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ]),
         'val': transforms.Compose([
@@ -344,46 +370,56 @@ if __name__ == "__main__":
             transforms.Resize(input_size, interpolation=Image.NEAREST),
             transforms.CenterCrop(input_size),
             transforms.ToTensor(),
-            transforms.Normalize([74.6176043792517/255.0], [85.28552921727005/255.0])
+            transforms.Normalize([train_mean/255.0], [train_std/255.0])
             # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ]),
         'test': transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize(input_size, interpolation=Image.NEAREST),
             transforms.ToTensor(),
-            transforms.Normalize([mean/255.0], [std/255.0])
+            transforms.Normalize([test_mean/255.0], [test_std/255.0])
         ]),
     }
 
-    # Create valing and validation datasets
-    image_datasets_dict = {phase: CustomTensorDataset(tensors=(tensor_x[phase], tensor_y[phase]), 
-                                                        transform=data_transforms[phase], 
-                                                        showing_img=False,
-                                                        is_training=False if phase=='test' else True, 
-                                                        clone_to_three=False) for phase in ['train', 'val', 'test']}
-    if args.dist:
-        datasampler_dict = {phase: DistributedSampler(dataset=image_datasets_dict[phase],
-                                                        num_replicas=world_size, 
-                                                        rank=local_rank,
-                                                        shuffle=True) for phase in ['train', 'val']}
-    
-        # Create training and validation dataloaders
-        dataloaders_dict = {phase: DataLoader(image_datasets_dict[phase], 
-                                                batch_size=batch_size,
-                                                sampler=datasampler_dict[phase], 
-                                                num_workers=4) for phase in ['train', 'val']}
-        dataloaders_dict['test'] = DataLoader(image_datasets_dict['test'], 
-                                                batch_size=batch_size,
-                                                shuffle=False,
-                                                num_workers=4)
+    if k_folds == 0:
+        train_data = np.load(train_data_dir)
+        train_gt = np.genfromtxt(train_gt_dir, delimiter=',')
+        train_gt = train_gt[1:,]
+        val_data = np.load(validation_data_dir)
+        val_gt = np.genfromtxt(validation_gt_dir, delimiter=',')
+        val_gt = val_gt[1:,]
+        
+        dataloaders_dict = dataloaders_dict_create(data_transforms, train_data, train_gt, val_data, val_gt, args.dist)
+
     else:
-        # Create training and validation dataloaders
-        dataloaders_dict = {phase: DataLoader(image_datasets_dict[phase], 
-                                                batch_size=batch_size,
-                                                shuffle=False if phase=='test' else True, 
-                                                num_workers=4) for phase in ['train', 'val', 'test']}
+        all_length = len(all_data)
+        all_idx = np.arange(all_length)
+        np.random.shuffle(all_idx)
+        dataloaders_dict_list = []
+        for fold in range(k_folds):
+            b_idx = int(all_length/k_folds*fold)
+            e_idx = int(all_length/k_folds*(fold+1))
+            train_idx = np.concatenate((all_idx[:b_idx], all_idx[e_idx:]), 0)
+            val_idx = all_idx[b_idx:e_idx]
+            dataloaders_dict = dataloaders_dict_create(data_transforms, all_data[train_idx], all_gt[train_idx], 
+                                                    all_data[val_idx], all_gt[val_idx], args.dist, local_rank, world_size)
+            dataloaders_dict_list.append(dataloaders_dict)
+    
+    test_tensor_x = torch.stack([torch.Tensor(i) for i in test_data])
+    test_tensor_x = test_tensor_x.reshape((-1, 1, 28, 28))
+
+    test_dataset = CustomTensorDataset(tensors=(test_tensor_x, None), 
+                                        transform=data_transforms['test'], 
+                                        showing_img=False,
+                                        is_training=False, 
+                                        clone_to_three=False)
+    test_dataloader = DataLoader(test_dataset, 
+                                batch_size=batch_size,
+                                shuffle=False,
+                                num_workers=4)
+
     if debug_img:# debug the dataset
-        img_dataset_show = CustomTensorDataset(tensors=(tensor_x['test'], tensor_y['test']),
+        img_dataset_show = CustomTensorDataset(tensors=(test_tensor_x, None),
                                                 transform=None,
                                                 showing_img=True,
                                                 is_training=False,
@@ -414,47 +450,94 @@ if __name__ == "__main__":
                 pass
                 # print("\t",name)
     
-    # Observe that all parameters are being optimized
-    optimizer_ft = optim.Adam(params_to_update, lr=begin_lr) #optim.SGD(params_to_update, lr=0.001, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
-    #optim.lr_scheduler.StepLR(optimizer_ft, step_size = 20, gamma=0.33)
+    if k_folds == 0:
+        # Observe that all parameters are being optimized
+        optimizer_ft = optim.Adam(params_to_update, lr=begin_lr) #optim.SGD(params_to_update, lr=0.001, momentum=0.9)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
+        #optim.lr_scheduler.StepLR(optimizer_ft, step_size = 20, gamma=0.33)
 
-    # Step5 Loss and train
-    # Setup the loss fxn
-    criterion = nn.CrossEntropyLoss()
-    print(' >> Model Created And Begin Training')
-    # Train and evaluate
-    model_ft, val_hist, train_hist = \
-        train_model(model_ft, dataloaders_dict, criterion, optimizer_ft, scheduler, num_epochs=num_epochs, dist=args.dist)
-    if not os.path.exists("./model"):
-        os.mkdir("./model")
-    torch.save(model_ft.state_dict(), './model/{}-{}-{}.pkl' .format(model_name, date.today(), ext_params)) 
+        # Step5 Loss and train
+        # Setup the loss fxn
+        criterion = nn.CrossEntropyLoss()
+        print(' >> Model Created And Begin Training')
+        # Train and evaluate
+        model_ft, val_hist, train_hist = \
+            train_model(model_ft, dataloaders_dict, criterion, optimizer_ft, scheduler, num_epochs=num_epochs, dist=args.dist)
+        if not os.path.exists("./model"):
+            os.mkdir("./model")
+        torch.save(model_ft.state_dict(), './model/{}-{}-{}.pkl' .format(model_name, date.today(), ext_params)) 
+        # show training result
+        if not args.dist or (args.dist and local_rank == 0):
+            plt.figure(1)
+            plt.title("Validation Accuracy vs. Number of Training Epochs")
+            plt.xlabel("Training Epochs")
+            plt.ylabel("Validation Accuracy")
+            plt.plot(range(1,num_epochs+1),val_hist,label = "validation")
+            plt.plot(range(1,num_epochs+1),train_hist,label = "training")
+            # plt.ylim((0.6,1.))
+            plt.xticks(np.arange(1, num_epochs+1, 1.0))
+            plt.legend()
+            plt.savefig('./model/{}-{}-{}.png' .format(model_name, date.today(), ext_params))
+            # print(' >> Validation history {}\r\n Training history {}'.format(val_hist, train_hist))
+        
+    else:
+        init_model_wts = copy.deepcopy(model_ft.state_dict())
+        optimizer_ft = optim.Adam(params_to_update, lr=begin_lr) #optim.SGD(params_to_update, lr=0.001, momentum=0.9)
+        init_optim_wts = copy.deepcopy(optimizer_ft.state_dict())
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
+        #optim.lr_scheduler.StepLR(optimizer_ft, step_size = 20, gamma=0.33)
+        criterion = nn.CrossEntropyLoss()
+
+        model_ft_list = []
+        avr_val_acc = 0.0
+        avr_train_acc = 0.0
+        for fold in range(k_folds):
+
+            # Step5 Loss and train
+            # Setup the loss fxn
+            
+            print(' >> Model Created And Begin Training for folds-{}'.format(fold))
+            # Train and evaluate
+            model_ft.load_state_dict(init_model_wts)
+            optimizer_ft.load_state_dict(init_optim_wts)
+            model_ft, val_hist, train_hist = \
+                train_model(model_ft, dataloaders_dict, criterion, optimizer_ft, scheduler, num_epochs=num_epochs, dist=args.dist)
+            
+            if not args.dist or (args.dist and local_rank == 0):
+                if not os.path.exists("./model/{}-{}-{}".format(model_name, date.today(), ext_params)):
+                    os.mkdir("./model/{}-{}-{}".format(model_name, date.today(), ext_params))
+                torch.save(model_ft.state_dict(), './model/{}-{}-{}/models-fold-{}.pkl' .format(model_name, date.today(), ext_params, fold)) 
+            
+            model_ft_list.append(copy.deepcopy(model_ft.state_dict()))
+            avr_val_acc = max(val_hist)
+            avr_train_acc = max(train_hist)
+        print(' >> Final average training accuracy: {} validation accuracy: {}' .format(avr_train_acc/k_folds, avr_val_acc/k_folds))
     
-    # show training result
-    if not args.dist or (args.dist and local_rank == 0):
-        plt.figure(1)
-        plt.title("Validation Accuracy vs. Number of Training Epochs")
-        plt.xlabel("Training Epochs")
-        plt.ylabel("Validation Accuracy")
-        plt.plot(range(1,num_epochs+1),val_hist,label = "validation")
-        plt.plot(range(1,num_epochs+1),train_hist,label = "training")
-        # plt.ylim((0.6,1.))
-        plt.xticks(np.arange(1, num_epochs+1, 1.0))
-        plt.legend()
-        plt.savefig('./model/{}-{}-{}.png' .format(model_name, date.today(), ext_params))
-        # print(' >> Validation history {}\r\n Training history {}'.format(val_hist, train_hist))
-
     # model_ft.load_state_dict(torch.load('./model/resnet-2019-11-22.pkl'))
     # model_ft = model_ft.to(device)
     # run test
+    if k_folds == 0:
+        model_ft.eval()
+        test_result = inference(model_ft, test_dataloader)
+        _, preds = torch.max(test_result, 1)
+    else:
+        model_ft.eval()
+        all_test = None
+        for fold in range(k_folds):
+            model_ft.load_state_dict(model_ft_list[fold])
+            test_result = inference(model_ft, test_dataloader)
+            test_result = nn.functional.softmax(test_result, dim=1)
+            if all_test is not None:
+                all_test = torch.add(all_test, test_result)
+            else:
+                all_test = test_result
+        _, preds = torch.max(all_test, 1)
     
-    model_ft.eval()
-    test_result = inference(model_ft, dataloaders_dict['test'])
-    test_result = test_result.cpu().detach().numpy()
+    preds = preds.cpu().detach().numpy()
     # test_result = test_result.reshape((test_result.shape[0],1))
-    csv_file = np.zeros((test_result.shape[0],2), dtype=np.int32)
-    csv_file[:,0] = np.arange(test_result.shape[0])
-    csv_file[:,1] = test_result
+    csv_file = np.zeros((preds.shape[0],2), dtype=np.int32)
+    csv_file[:,0] = np.arange(preds.shape[0])
+    csv_file[:,1] = preds
     if not args.dist or (args.dist and local_rank == 0):
         with open("./data/test-{}-{}-{}.csv".format(model_name, date.today(), ext_params), "wb") as f:
             f.write(b'image_id,label\n')

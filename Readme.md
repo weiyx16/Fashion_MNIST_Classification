@@ -16,9 +16,10 @@
 - [ ] Train LR_Scheduler with warming up, at least a decaying lr (it seems the validation loss decay really slow.?
 - [ ] How about trying the AdamW?
 - [x] A better dataArgument with noisy padding or else. And if Need Normalize? Yes, needed.
-- [ ] How to deal with the problem that the loss of trainset with splitting validation set. Try to solve with CrossValidation
+- [x] How to deal with the problem that the loss of trainset with splitting validation set. Try to solve with CrossValidation. It seems the Crossvalidation is not using all the dataset. Instead, it will try number k models to more accurately to evaluate the model (because I almost get an average evaluation over whole dataset.) After you choose the best hyperParams setting, you can run the model on whole set.
 - [ ] Refer to CNN tricks, and see if any modification on Model Structure.
 - [x] Finish a distributed training version. But using MultiGPU seems to loss about 1% accuracy.
+- [ ] Error Analysis. Which types of imgs will cause the most confusing?
 
 ## Usage
 ```sh
