@@ -32,6 +32,7 @@ from MyDataset import CustomTensorDataset
 from LeNet import LeNet
 from ResNet import ResNet18, ResNet34
 from optimization import WarmupLinearSchedule, AdamW
+from MyTransforms import RandomPepperNoise
 
 print("PyTorch Version: ",torch.__version__)
 
@@ -56,25 +57,25 @@ num_classes = 10
 debug_img = 0
 
 # Batch size for training (change depending on how much memory you have)
-batch_size = 512
+batch_size = 64
 
 # folds
-k_folds = 0
+k_folds = 10
 
 # Number of epochs to train
-num_epochs = 50
+num_epochs = 150
 
 # begin_lr
-begin_lr = 2e-1
+begin_lr = 3e-2
 
 # lr_schedule
 lr_schedule = 'triangle'  #plateau
 
 # optimizer
-optim_type = 'SGD'
+optim_type = 'AdamW'
 
 # extra params
-ext_params = 'lr_decay-{}-bs-{}-ep-{}-folds-{}-lrs-{}-optim-{}' \
+ext_params = 'lr_decay-{}-bs-{}-ep-{}-folds-{}-lrs-{}-optim-{}-With_Pepper' \
             .format(begin_lr, batch_size, num_epochs, k_folds, lr_schedule, optim_type)
 
 # Flag for feature extracting. When False, we finetune the whole model,
@@ -370,8 +371,10 @@ if __name__ == "__main__":
             transforms.ToPILImage(),
             transforms.Resize(input_size, interpolation=Image.NEAREST),
             transforms.RandomCrop(input_size, padding=4),
+            transforms.RandomRotation(15, resample=False, expand=False),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
+            RandomPepperNoise(snr=0.99,p=0.5),
             transforms.ToTensor(),
             transforms.Normalize([train_mean/255.0], [train_std/255.0])
             # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
@@ -467,7 +470,7 @@ if __name__ == "__main__":
         if optim_type == 'Adam':
             optimizer_ft = optim.Adam(params_to_update, lr=begin_lr)
         if optim_type == 'SGD':
-            optimizer_ft = optim.SGD(params_to_updata, lr=begin_lr, momentum=0.9)
+            optimizer_ft = optim.SGD(params_to_update, lr=begin_lr, momentum=0.9)
         else:
             optimizer_ft = AdamW(params_to_update, lr=begin_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-2)
 
@@ -532,6 +535,8 @@ if __name__ == "__main__":
             params_to_update = model_ft.parameters()
             if optim_type == 'Adam':
                 optimizer_ft = optim.Adam(params_to_update, lr=begin_lr)
+            if optim_type == 'SGD':
+                optimizer_ft = optim.SGD(params_to_update, lr=begin_lr, momentum=0.9)
             else:
                 optimizer_ft = AdamW(params_to_update, lr=begin_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-2)
             if lr_schedule == 'plateau':
