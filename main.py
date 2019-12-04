@@ -31,7 +31,7 @@ from datetime import date
 from MyDataset import CustomTensorDataset
 from LeNet import LeNet
 from ResNet import ResNet18, ResNet34
-from optimization import WarmupLinearSchedule, AdamW
+from optimization import WarmupLinearSchedule, WarmupCosineSchedule, AdamW
 from MyTransforms import RandomPepperNoise
 
 print("PyTorch Version: ",torch.__version__)
@@ -63,19 +63,19 @@ batch_size = 64
 k_folds = 10
 
 # Number of epochs to train
-num_epochs = 150
+num_epochs = 100
 
 # begin_lr
-begin_lr = 3e-2
+begin_lr = 4e-2
 
 # lr_schedule
-lr_schedule = 'triangle'  #plateau
+lr_schedule = 'cosine'  #plateau
 
 # optimizer
 optim_type = 'AdamW'
 
 # extra params
-ext_params = 'lr_decay-{}-bs-{}-ep-{}-folds-{}-lrs-{}-optim-{}-With_Pepper' \
+ext_params = 'lr_decay-{}-bs-{}-ep-{}-folds-{}-lrs-{}-optim-{}' \
             .format(begin_lr, batch_size, num_epochs, k_folds, lr_schedule, optim_type)
 
 # Flag for feature extracting. When False, we finetune the whole model,
@@ -149,7 +149,7 @@ def train_model(model, dataloaders, criterion, optimizer, scheduler=None, num_ep
                     # backward + optimize parameters only if in training phase
                     if phase == 'train':
                         loss.backward()
-                        if lr_schedule == 'triangle':
+                        if lr_schedule == 'triangle' or lr_schedule == 'cosine':
                             scheduler.step()
                         optimizer.step()
                         # for param_group in optimizer.param_groups:
@@ -374,7 +374,7 @@ if __name__ == "__main__":
             transforms.RandomRotation(15, resample=False, expand=False),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
-            RandomPepperNoise(snr=0.99,p=0.5),
+            # RandomPepperNoise(snr=0.99,p=0.5),
             transforms.ToTensor(),
             transforms.Normalize([train_mean/255.0], [train_std/255.0])
             # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
@@ -485,10 +485,17 @@ if __name__ == "__main__":
             #                                                         cooldown=2,
             #                                                         min_lr=0,
             #                                                         eps=1e-8)
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3)
+        if lr_schedule == 'cosine':
+            scheduler = WarmupCosineSchedule(optimizer_ft,
+                                            warmup_steps=2000,
+                                            t_total=int(num_epochs * len(dataloaders_dict['train'])),
+                                            cycles=1., 
+                                            last_lr=1e-4,
+                                            last_epoch = -1)
         else:
             scheduler = WarmupLinearSchedule(optimizer_ft,
-                                            warmup_steps=500,
+                                            warmup_steps=2000,
                                             t_total=int(num_epochs * len(dataloaders_dict['train'])),
                                             last_epoch = -1)
         criterion = nn.CrossEntropyLoss()
@@ -551,6 +558,13 @@ if __name__ == "__main__":
                 #                                                         min_lr=0,
                 #                                                         eps=1e-8)
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
+            if lr_schedule == 'cosine':
+                scheduler = WarmupCosineSchedule(optimizer_ft,
+                                                warmup_steps=2000,
+                                                t_total=int(num_epochs * len(dataloaders_dict['train'])),
+                                                cycles=1., 
+                                                last_lr=0.,
+                                                last_epoch = -1)
             else:
                 scheduler = WarmupLinearSchedule(optimizer_ft,
                                                 warmup_steps=2000,
@@ -575,7 +589,7 @@ if __name__ == "__main__":
                 all_test = test_result
             avr_val_acc += max(val_hist)
             avr_train_acc += max(train_hist)
-
+            print(' >> Current average training accuracy: {} validation accuracy: {}' .format(avr_train_acc/(fold+1), avr_val_acc/(fold+1)))
         _, preds = torch.max(all_test, 1)
         print(' >> Final average training accuracy: {} validation accuracy: {}' .format(avr_train_acc/k_folds, avr_val_acc/k_folds))
     
