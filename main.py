@@ -31,6 +31,7 @@ from datetime import date
 from MyDataset import CustomTensorDataset
 from LeNet import LeNet
 from ResNet import ResNet18, ResNet34
+from DenseNet import DenseNet
 from optimization import WarmupLinearSchedule, WarmupCosineSchedule, AdamW
 from MyTransforms import RandomPepperNoise
 
@@ -69,7 +70,7 @@ num_epochs = 100
 begin_lr = 4e-2
 
 # lr_schedule
-lr_schedule = 'cosine'  #plateau
+lr_schedule = 'triangle'  #plateau
 
 # optimizer
 optim_type = 'AdamW'
@@ -270,6 +271,11 @@ def initialize_model(model_name, num_classes, feature_extract=True, use_pretrain
     elif model_name == "resnet_adpat34":
         input_size = 28
         model_ft = ResNet34(num_classes)
+
+    elif model_name == "densenet_adpat":
+        input_size = 28
+        model_ft = DenseNet(growthRate=12, depth=100, reduction=0.5,
+                            bottleneck=True, nClasses=num_classes)
 
     else:
         print("Invalid model name, exiting...")
