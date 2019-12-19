@@ -16,8 +16,7 @@ import torch.optim as optim
 import numpy as np
 from torchvision import models, transforms
 from torch.utils.data import DataLoader
-# from torch.utils.data.distributed import DistributedSampler
-from distributed import DistributedSampler
+from dataset.distributed import DistributedSampler
 import torch.distributed as distributed
 from torch.nn.parallel import DistributedDataParallel as DDP
 import matplotlib.pyplot as plt
@@ -28,12 +27,12 @@ import copy
 from PIL import Image
 from tqdm import tqdm
 from datetime import date
-from MyDataset import CustomTensorDataset
-from LeNet import LeNet
-from ResNet import ResNet18, ResNet34
-from DenseNet import DenseNet
+from dataset.MyDataset import CustomTensorDataset
+from dataset.MyTransforms import RandomPepperNoise
+from model.LeNet import LeNet
+from model.ResNet import ResNet18, ResNet34
+from model.DenseNet import DenseNet
 from optimization import WarmupLinearSchedule, WarmupCosineSchedule, AdamW
-from MyTransforms import RandomPepperNoise
 
 print("PyTorch Version: ",torch.__version__)
 
@@ -71,6 +70,7 @@ begin_lr = 4e-2
 
 # lr_schedule
 lr_schedule = 'triangle'  #plateau
+warmupiter = 0.05
 
 # optimizer
 optim_type = 'AdamW'
@@ -224,42 +224,6 @@ def initialize_model(model_name, num_classes, feature_extract=True, use_pretrain
         model_ft.fc = nn.Linear(num_ftrs, num_classes) # replace fc with 2048 to num_class
         input_size = 224
 
-    elif model_name == "alexnet":
-        """ Alexnet
-        """
-        model_ft = models.alexnet(pretrained=use_pretrained)
-        set_parameter_requires_grad(model_ft, feature_extract)
-        num_ftrs = model_ft.classifier[6].in_features
-        model_ft.classifier[6] = nn.Linear(num_ftrs,num_classes)
-        input_size = 224
-
-    elif model_name == "vgg":
-        """ VGG11_bn
-        """
-        model_ft = models.vgg11_bn(pretrained=use_pretrained)
-        set_parameter_requires_grad(model_ft, feature_extract)
-        num_ftrs = model_ft.classifier[6].in_features
-        model_ft.classifier[6] = nn.Linear(num_ftrs,num_classes)
-        input_size = 224
-
-    elif model_name == "squeezenet":
-        """ Squeezenet
-        """
-        model_ft = models.squeezenet1_0(pretrained=use_pretrained)
-        set_parameter_requires_grad(model_ft, feature_extract)
-        model_ft.classifier[1] = nn.Conv2d(512, num_classes, kernel_size=(1,1), stride=(1,1))
-        model_ft.num_classes = num_classes
-        input_size = 224
-
-    elif model_name == "densenet":
-        """ Densenet
-        """
-        model_ft = models.densenet121(pretrained=use_pretrained)
-        set_parameter_requires_grad(model_ft, feature_extract)
-        num_ftrs = model_ft.classifier.in_features
-        model_ft.classifier = nn.Linear(num_ftrs, num_classes)
-        input_size = 224
-
     elif model_name == "LeNet":
         input_size = 28
         model_ft = LeNet()
@@ -304,15 +268,15 @@ def inference(model, dataloader):
 
     return test_result
 
-def dataloaders_dict_create(data_transforms, train_data, train_gt, val_data, val_gt, dist=True, local_rank=0, world_size=1):
+def dataloaders_dict_create(data_transforms, train_data, train_gt, val_data, val_gt, input_size=28, dist=True, local_rank=0, world_size=1):
     train_tensor_x = torch.stack([torch.Tensor(i) for i in train_data])
-    train_tensor_x = train_tensor_x.reshape((-1, 1, 28, 28))
+    train_tensor_x = train_tensor_x.reshape((-1, 1, input_size, input_size))
 
     train_tensor_y = torch.stack([torch.Tensor(np.asarray(i[1])) for i in train_gt])
     train_tensor_y = train_tensor_y.reshape(train_tensor_y.shape[0], 1)
 
     val_tensor_x = torch.stack([torch.Tensor(i) for i in val_data])
-    val_tensor_x = val_tensor_x.reshape((-1, 1, 28, 28))
+    val_tensor_x = val_tensor_x.reshape((-1, 1, input_size, input_size))
 
     val_tensor_y = torch.stack([torch.Tensor(np.asarray(i[1])) for i in val_gt])
     val_tensor_y = val_tensor_y.reshape(val_tensor_y.shape[0], 1)
@@ -347,11 +311,40 @@ def dataloaders_dict_create(data_transforms, train_data, train_gt, val_data, val
     return dataloaders_dict
 
 
+def optimizer_create(model_ft, train_number):
+    train_number = len(dataloaders_dict['train'])
+    params_to_update = model_ft.parameters()
+    # Observe that all parameters are being optimized
+    if optim_type == 'Adam':
+        optimizer_ft = optim.Adam(params_to_update, lr=begin_lr)
+    if optim_type == 'SGD':
+        optimizer_ft = optim.SGD(params_to_update, lr=begin_lr, momentum=0.9)
+    else:
+        optimizer_ft = AdamW(params_to_update, lr=begin_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-2)
+
+    if lr_schedule == 'plateau':
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3)
+    if lr_schedule == 'cosine':
+        scheduler = WarmupCosineSchedule(optimizer_ft,
+                                        warmup_steps=int(warmupiter*num_epochs*train_number/batch_size),
+                                        t_total=int(num_epochs*train_number),
+                                        cycles=1., 
+                                        last_lr=1e-4,
+                                        last_epoch = -1)
+    else:
+        # triangle
+        scheduler = WarmupLinearSchedule(optimizer_ft,
+                                        warmup_steps=int(warmupiter*num_epochs*train_number/batch_size),
+                                        t_total=int(num_epochs*train_number),
+                                        last_epoch = -1)
+    return optimizer_ft, scheduler
+    
 if __name__ == "__main__":
     args = parse_args()
     ext_params += '-dist-{}' .format(args.dist)
     # Step1 Model:
     # Initialize the model for this run
+    print(" >> Initializing the model")
     model_ft, input_size = initialize_model(model_name, num_classes, feature_extract, use_pretrained=True)
     if args.dist:
         distributed.init_process_group(backend='nccl', init_method='env://')
@@ -367,8 +360,8 @@ if __name__ == "__main__":
     all_data = np.load(src_data_dir)
     all_gt = np.genfromtxt(src_gt_dir, delimiter=',')
     all_gt = all_gt[1:,]
-    train_mean = np.mean(all_data.ravel())
-    train_std = np.std(all_data.ravel())
+    all_mean = np.mean(all_data.ravel())
+    all_std = np.std(all_data.ravel())
     test_data = np.load(test_data_dir)
     test_mean = np.mean(test_data.ravel())
     test_std = np.std(test_data.ravel())
@@ -382,16 +375,14 @@ if __name__ == "__main__":
             transforms.RandomVerticalFlip(),
             # RandomPepperNoise(snr=0.99,p=0.5),
             transforms.ToTensor(),
-            transforms.Normalize([train_mean/255.0], [train_std/255.0])
-            # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            transforms.Normalize([all_mean/255.0], [all_std/255.0])
         ]),
         'val': transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize(input_size, interpolation=Image.NEAREST),
             transforms.CenterCrop(input_size),
             transforms.ToTensor(),
-            transforms.Normalize([train_mean/255.0], [train_std/255.0])
-            # transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            transforms.Normalize([all_mean/255.0], [all_std/255.0])
         ]),
         'test': transforms.Compose([
             transforms.ToPILImage(),
@@ -402,6 +393,8 @@ if __name__ == "__main__":
     }
 
     if k_folds == 0:
+        if not os.path.isfile(train_data_dir) or not os.path.isfile(validation_data_dir):
+            os.system("python ./dataset/data_split.py")
         train_data = np.load(train_data_dir)
         train_gt = np.genfromtxt(train_gt_dir, delimiter=',')
         train_gt = train_gt[1:,]
@@ -409,7 +402,7 @@ if __name__ == "__main__":
         val_gt = np.genfromtxt(validation_gt_dir, delimiter=',')
         val_gt = val_gt[1:,]
         
-        dataloaders_dict = dataloaders_dict_create(data_transforms, train_data, train_gt, val_data, val_gt, args.dist, local_rank, world_size)
+        dataloaders_dict = dataloaders_dict_create(data_transforms, train_data, train_gt, val_data, val_gt, input_size, args.dist, local_rank, world_size)
 
     else:
         all_length = len(all_data)
@@ -422,11 +415,11 @@ if __name__ == "__main__":
             train_idx = np.concatenate((all_idx[:b_idx], all_idx[e_idx:]), 0)
             val_idx = all_idx[b_idx:e_idx]
             dataloaders_dict = dataloaders_dict_create(data_transforms, all_data[train_idx], all_gt[train_idx], 
-                                                    all_data[val_idx], all_gt[val_idx], args.dist, local_rank, world_size)
+                                                    all_data[val_idx], all_gt[val_idx], input_size, args.dist, local_rank, world_size)
             dataloaders_dict_list.append(dataloaders_dict)
     
     test_tensor_x = torch.stack([torch.Tensor(i) for i in test_data])
-    test_tensor_x = test_tensor_x.reshape((-1, 1, 28, 28))
+    test_tensor_x = test_tensor_x.reshape((-1, 1, input_size, input_size))
 
     test_dataset = CustomTensorDataset(tensors=(test_tensor_x, None), 
                                         transform=data_transforms['test'], 
@@ -437,32 +430,8 @@ if __name__ == "__main__":
                                 batch_size=batch_size,
                                 shuffle=False,
                                 num_workers=4)
-
-    if debug_img:# debug the dataset
-        img_dataset_show = CustomTensorDataset(tensors=(test_tensor_x, None),
-                                                transform=None,
-                                                showing_img=True,
-                                                is_training=False,
-                                                clone_to_three=False)
-        img_loader_show = DataLoader(img_dataset_show, batch_size=1)
-        # iterate
-        for idx, (x, y) in enumerate(img_loader_show):
-            if idx > debug_img:
-                break
-
-    # if feature_extract:
-    #     params_to_update = []
-    #     for name,param in model_ft.named_parameters():
-    #         if param.requires_grad == True:
-    #             params_to_update.append(param)
-    #             # print("\t",name)
-    # else:
-    #     params_to_update = model_ft.parameters()
-    #     for name,param in model_ft.named_parameters():
-    #         if param.requires_grad == True:
-    #             pass
-    #             # print("\t",name)
     
+    print(" >> Preparing for training")
     if k_folds == 0:
         if args.dist:
             model_ft = model_ft.cuda()
@@ -471,39 +440,7 @@ if __name__ == "__main__":
         else:
             model_ft.cuda()
 
-        params_to_update = model_ft.parameters()
-        # Observe that all parameters are being optimized
-        if optim_type == 'Adam':
-            optimizer_ft = optim.Adam(params_to_update, lr=begin_lr)
-        if optim_type == 'SGD':
-            optimizer_ft = optim.SGD(params_to_update, lr=begin_lr, momentum=0.9)
-        else:
-            optimizer_ft = AdamW(params_to_update, lr=begin_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-2)
-
-        if lr_schedule == 'plateau':
-            # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,
-            #                                                         mode='min',
-            #                                                         factor=0.2,
-            #                                                         patience=1,
-            #                                                         verbose=False,
-            #                                                         threshold=1e-4,
-            #                                                         threshold_mode='rel',
-            #                                                         cooldown=2,
-            #                                                         min_lr=0,
-            #                                                         eps=1e-8)
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3)
-        if lr_schedule == 'cosine':
-            scheduler = WarmupCosineSchedule(optimizer_ft,
-                                            warmup_steps=2000,
-                                            t_total=int(num_epochs * len(dataloaders_dict['train'])),
-                                            cycles=1., 
-                                            last_lr=1e-4,
-                                            last_epoch = -1)
-        else:
-            scheduler = WarmupLinearSchedule(optimizer_ft,
-                                            warmup_steps=2000,
-                                            t_total=int(num_epochs * len(dataloaders_dict['train'])),
-                                            last_epoch = -1)
+        optimizer_ft, scheduler = optimizer_create(model_ft, len(dataloaders_dict['train']))
         criterion = nn.CrossEntropyLoss()
         print(' >> Model Created And Begin Training')
         # Train and evaluate
@@ -515,16 +452,15 @@ if __name__ == "__main__":
         # show training result
         if not args.dist or (args.dist and local_rank == 0):
             plt.figure(1)
-            plt.title("Validation Accuracy vs. Number of Training Epochs")
+            plt.title("Val and Train Accuracy v.s. Number of Training Epochs")
             plt.xlabel("Training Epochs")
-            plt.ylabel("Validation Accuracy")
+            plt.ylabel("Accuracy")
             plt.plot(range(1,num_epochs+1),val_hist,label = "validation")
             plt.plot(range(1,num_epochs+1),train_hist,label = "training")
             # plt.ylim((0.6,1.))
             plt.xticks(np.arange(1, num_epochs+1, 1.0))
             plt.legend()
             plt.savefig('./model/{}-{}-{}.png' .format(model_name, date.today(), ext_params))
-            # print(' >> Validation history {}\r\n Training history {}'.format(val_hist, train_hist))
         
         model_ft.eval()
         test_result = inference(model_ft, test_dataloader)
@@ -544,38 +480,7 @@ if __name__ == "__main__":
                 print(" >> Distribute the model")
             else:
                 model_ft.cuda()
-
-            params_to_update = model_ft.parameters()
-            if optim_type == 'Adam':
-                optimizer_ft = optim.Adam(params_to_update, lr=begin_lr)
-            if optim_type == 'SGD':
-                optimizer_ft = optim.SGD(params_to_update, lr=begin_lr, momentum=0.9)
-            else:
-                optimizer_ft = AdamW(params_to_update, lr=begin_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-2)
-            if lr_schedule == 'plateau':
-                # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,
-                #                                                         mode='min',
-                #                                                         factor=0.2,
-                #                                                         patience=1,
-                #                                                         verbose=False,
-                #                                                         threshold=1e-4,
-                #                                                         threshold_mode='rel',
-                #                                                         cooldown=2,
-                #                                                         min_lr=0,
-                #                                                         eps=1e-8)
-                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer_ft,mode='min',factor=0.2,patience=3) 
-            if lr_schedule == 'cosine':
-                scheduler = WarmupCosineSchedule(optimizer_ft,
-                                                warmup_steps=2000,
-                                                t_total=int(num_epochs * len(dataloaders_dict['train'])),
-                                                cycles=1., 
-                                                last_lr=0.,
-                                                last_epoch = -1)
-            else:
-                scheduler = WarmupLinearSchedule(optimizer_ft,
-                                                warmup_steps=2000,
-                                                t_total=int(num_epochs * len(dataloaders_dict['train'])),
-                                                last_epoch = -1)
+            optimizer_ft, scheduler = optimizer_create(model_ft, len(dataloaders_dict['train']))
             criterion = nn.CrossEntropyLoss()
             print(' >> Model Created And Begin Training for folds-{}'.format(fold))
             model_ft, val_hist, train_hist = \
@@ -598,11 +503,8 @@ if __name__ == "__main__":
             print(' >> Current average training accuracy: {} validation accuracy: {}' .format(avr_train_acc/(fold+1), avr_val_acc/(fold+1)))
         _, preds = torch.max(all_test, 1)
         print(' >> Final average training accuracy: {} validation accuracy: {}' .format(avr_train_acc/k_folds, avr_val_acc/k_folds))
-    
-    # model_ft.load_state_dict(torch.load('./model/resnet-2019-11-22.pkl'))
-    # model_ft = model_ft.to(device)    
+       
     preds = preds.cpu().detach().numpy()
-    # test_result = test_result.reshape((test_result.shape[0],1))
     csv_file = np.zeros((preds.shape[0],2), dtype=np.int32)
     csv_file[:,0] = np.arange(preds.shape[0])
     csv_file[:,1] = preds
@@ -610,4 +512,3 @@ if __name__ == "__main__":
         with open("./data/test-{}-{}-{}.csv".format(model_name, date.today(), ext_params), "wb") as f:
             f.write(b'image_id,label\n')
             np.savetxt(f, csv_file.astype(int), fmt='%i', delimiter=",")
-        # print(' >> Save model to "./model/{}-{}-{}.pkl"' .format(model_name, date.today(), ext_params))
