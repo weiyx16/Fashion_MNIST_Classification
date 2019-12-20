@@ -1,7 +1,15 @@
-"""
-Modified from torchvision, adapted to take 1*28*28 or 3*28*28 Image as input.
-"""
+'''
 
+Image Classification
+10 kind of labels provided from assistant teachers
+Pytorch 1.1.0 & python 3.6
+
+Author: @weiyx16.github.io
+Email: weason1998@gmail.com
+
+Modified from torchvision, adapted to take 1*28*28
+@function: Pepper noise augmentation
+'''
 import torch
 import torch.nn as nn
 

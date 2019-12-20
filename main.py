@@ -1,14 +1,14 @@
 '''
 
-Image Classification with finetuning or feature extraction on pretrained resnet-50
-10 kind of leaves provided from assistant teachers
+Image Classification
+10 kind of labels provided from assistant teachers
 Pytorch 1.1.0 & python 3.6
 
 Author: @weiyx16.github.io
-weiyx16@mails.tsinghua.edu.cn
+Email: weason1998@gmail.com
 
 adapted from https://pytorch.org/tutorials/beginner/finetuning_torchvision_models_tutorial.html
-
+@function: Main training funtion with inference embedded
 '''
 import torch
 import torch.nn as nn
@@ -67,7 +67,7 @@ k_folds = 0
 num_epochs = 100
 
 # begin_lr
-begin_lr = 4e-2
+begin_lr = 3e-2
 
 # lr_schedule
 lr_schedule = 'triangle'  #plateau

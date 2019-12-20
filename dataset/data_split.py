@@ -1,13 +1,11 @@
 '''
 
-Image Classification with finetuning or feature extraction on pretrained resnet-50
+Image Classification
 10 kind of labels provided from assistant teachers
 Pytorch 1.1.0 & python 3.6
 
 Author: @weiyx16.github.io
-weiyx16@mails.tsinghua.edu.cn
-
-adapted from https://pytorch.org/tutorials/beginner/finetuning_torchvision_models_tutorial.html
+Email: weason1998@gmail.com
 
 @function: Split src training set with 30K img to training set (80%) and validation set (80%)
 '''

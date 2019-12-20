@@ -1,15 +1,28 @@
-from ResNet import ResNet18, ResNet34
+'''
+
+Image Classification
+10 kind of labels provided from assistant teachers
+Pytorch 1.1.0 & python 3.6
+
+Author: @weiyx16.github.io
+Email: weason1998@gmail.com
+
+Modified from torchvision, adapted to take 1*28*28
+@function: Inference only
+'''
+from model.ResNet import ResNet18, ResNet34
+from model.LeNet import LeNet
 import torch
 import torch.nn as nn
 import numpy as np
 from torchvision import models, transforms
 import os
-from MyDataset import CustomTensorDataset
+from dataset.MyDataset import CustomTensorDataset
 from torch.utils.data import DataLoader
 from PIL import Image
 
 test_data_dir = r"./data/test_noise_rm.npy"
-model_dir = r"./model/resnet_adpat-2019-12-01-lr_decay-0.03-bs-64-ep-100-folds-10-lrs-triangle-optim-AdamW-dist-False"
+model_dir = r"./output/resnet_adpat-2019-12-01-lr_decay-0.03-bs-64-ep-100-folds-10-lrs-triangle-optim-AdamW-dist-False"
 
 # Models to choose from [resnet, alexnet, vgg, squeezenet, densenet, inception]
 model_name = "resnet_adpat"
@@ -26,6 +39,16 @@ batch_size = 64
 # folds
 k_folds = 10
 
+
+def set_parameter_requires_grad(model, feature_extracting):
+    """
+    When feature extract with pretrained model, we needn't retrain the parameters before FC
+    But different when fine tune
+    """
+    if feature_extracting:
+        for param in model.parameters():
+            param.requires_grad = False
+
 def initialize_model(model_name, num_classes, feature_extract=True, use_pretrained=True):
     # Initialize these variables which will be set in this if statement. Each of these
     #   variables is model specific.
@@ -41,42 +64,6 @@ def initialize_model(model_name, num_classes, feature_extract=True, use_pretrain
         set_parameter_requires_grad(model_ft, feature_extract)
         num_ftrs = model_ft.fc.in_features # (fc): Linear(in_features=2048, out_features=1000, bias=True)
         model_ft.fc = nn.Linear(num_ftrs, num_classes) # replace fc with 2048 to num_class
-        input_size = 224
-
-    elif model_name == "alexnet":
-        """ Alexnet
-        """
-        model_ft = models.alexnet(pretrained=use_pretrained)
-        set_parameter_requires_grad(model_ft, feature_extract)
-        num_ftrs = model_ft.classifier[6].in_features
-        model_ft.classifier[6] = nn.Linear(num_ftrs,num_classes)
-        input_size = 224
-
-    elif model_name == "vgg":
-        """ VGG11_bn
-        """
-        model_ft = models.vgg11_bn(pretrained=use_pretrained)
-        set_parameter_requires_grad(model_ft, feature_extract)
-        num_ftrs = model_ft.classifier[6].in_features
-        model_ft.classifier[6] = nn.Linear(num_ftrs,num_classes)
-        input_size = 224
-
-    elif model_name == "squeezenet":
-        """ Squeezenet
-        """
-        model_ft = models.squeezenet1_0(pretrained=use_pretrained)
-        set_parameter_requires_grad(model_ft, feature_extract)
-        model_ft.classifier[1] = nn.Conv2d(512, num_classes, kernel_size=(1,1), stride=(1,1))
-        model_ft.num_classes = num_classes
-        input_size = 224
-
-    elif model_name == "densenet":
-        """ Densenet
-        """
-        model_ft = models.densenet121(pretrained=use_pretrained)
-        set_parameter_requires_grad(model_ft, feature_extract)
-        num_ftrs = model_ft.classifier.in_features
-        model_ft.classifier = nn.Linear(num_ftrs, num_classes)
         input_size = 224
 
     elif model_name == "LeNet":
@@ -127,7 +114,7 @@ if __name__ == "__main__":
             transforms.Normalize([test_mean/255.0], [test_std/255.0])])
 
     test_tensor_x = torch.stack([torch.Tensor(i) for i in test_data])
-    test_tensor_x = test_tensor_x.reshape((-1, 1, 28, 28))
+    test_tensor_x = test_tensor_x.reshape((-1, 1, input_size, input_size))
 
     test_dataset = CustomTensorDataset(tensors=(test_tensor_x, None), 
                                         transform=test_tf, 
@@ -155,6 +142,6 @@ if __name__ == "__main__":
     csv_file = np.zeros((preds.shape[0],2), dtype=np.int32)
     csv_file[:,0] = np.arange(preds.shape[0])
     csv_file[:,1] = preds
-    with open("./data/test-resnet_adpat_NoiseRM.csv", "wb") as f:
+    with open("./output/test-resnet_adpat_NoiseRM.csv", "wb") as f:
         f.write(b'image_id,label\n')
         np.savetxt(f, csv_file.astype(int), fmt='%i', delimiter=",")

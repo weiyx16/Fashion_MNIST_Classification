@@ -1,131 +1,109 @@
-# UnKnown dataset for 10-Classification
+# GrayImg of Clothes dataset 10-Classification
+
+By [Yixuan Wei](http://weiyx16.github.io/)
 
 ## Description
 
-+ Image Type: UnKnown
++ Image Type: Gray image with 28*28
++ Content Type: 10 kinds of clothes
++ Task: Classification
 + Class Number: 10
+![](./img/dataset.png)
++ Win top 5% in a Kaggle competition in class, gaining 91.7% accuracy.
 
-## Schedule
+## Prepare
 
-- [x] Training and Testing File Structure
-- [x] Submission Test
-- [x] Finish model adapted from ResNet-18
-- [x] Take a look at what the hell the imgs are.
-- [x] Try LeNet and other simpler model.
-- [x] Write a model myself, e.g. rewrite the resnet-18 to adapt to my input? What about the batchNorm Layer and Frozon?
-- [x] Train LR_Scheduler with warming up, at least a decaying lr (it seems the validation loss decay really slow.?
-- [x] How about trying the AdamW?
-- [x] A better dataArgument with noisy padding or else. And if Need Normalize? Yes, needed.
-- [x] How to deal with the problem that the loss of trainset with splitting validation set. Try to solve with CrossValidation. It seems the Crossvalidation is not using all the dataset. Instead, it will try number k models to more accurately to evaluate the model (because I almost get an average evaluation over whole dataset.) After you choose the best hyperParams setting, you can run the model on whole set.
-- [x] Refer to CNN tricks, and see if any modification on Model Structure.
-- [x] Finish a distributed training version. But using MultiGPU seems to loss about 1% accuracy.
-- [ ] Error Analysis. Which types of imgs will cause the most confusing? And how to Improve?
-- [x] DataAugment for Rotate slightly and Pepper Noise which suitable to the dataset.
+### Environment
+
++ Ubuntu 16.04, CUDA 9.0
++ Recommand to use anaconda.
++ Pytorch 1.1.0, and [other packages](./img/config.yaml)
+
+### Data
+Download [datasets](https://drive.google.com/drive/folders/1N6oFtBIO6kEdyHAOwvpUerSKoQ0cFlob?usp=sharing), and organize them as following:
+
+```
+code_root/
+└── data/
+    ├── src.npy
+    ├── src.csv
+    └── test.npy
+```
+
+Notice the src.npy and src.csv is the source image and label, test.npy is the test img in Kaggle.
 
 ## Usage
 ```sh
 # Single GPU
-$ dist_run.sh 1 GPU_IDX main.py
+$ ./dist_run.sh 1 ${GPU_IDX} main.py
 # Multi GPU
-# Using 4 GPU
-$ dist_run.sh 4 0 main.py --dist
+$ ./dist_run.sh ${GPU_number} 0 main.py --dist
+# E.g. Using 4 GPU
+$ ./dist_run.sh 4 0 main.py --dist
 ```
 
-## Notication
-注意多GPU训练时，如果你需要k-folds cross validation，也就是说，你需要训多个一样的模型的时候，如果DDP在前，你在每个fold里去load init params是不对的，因为你DDP到各个进程在前，没有broadcast init params。我的解决方案是每个fold都init一个新的model，然后DDP，保险起见，我optimizer也选用New的方式，而不是load init params。
-<!-- # Leaf Classification and Vein Segmentation
+## Method
++ A model structure similar to ResNet18 but adapted to input size with 28\*28\*1
++ LR Scheduler with 5% WarmUp and Linear Decline
++ AdamW Optimizer
++ Data Augmentation:R andomCrop+RandomRotation+RandomFlip+Normalization
++ With k folds cross validation
++ NCCL Backend Distribution
 
-*Class Assignment in junior year* : see [Requirement](img/requirement.pdf)  
+## Main Params
+Here is [some params](https://github.com/weiyx16/MNIST_LIKE_Classification/blob/release/main.py#L61) you can change to obtain better result in your own dataset:
+```python
+# batchsize
+batch_size = 64
+# folds in cross validation
+k_folds = 0  #5 #10
+# Number of epochs to train
+num_epochs = 100
+# begin_lr
+begin_lr = 3e-2
+# lr_schedule
+lr_schedule = 'triangle'  #plateau #cosine
+warmupiter = 0.05  #0.01~0.1
+# optimizer
+optim_type = 'AdamW'  #SGD #Adam
+```
 
-## Leaf Classification
+## Comparison Experiment and ablation study
+Besides, I also did lots of comparison experiments, and maybe some of them is not so "fair", but wish you to gain some insight. And sorry that the report is in Chinese, but the tables in it is in English which you may find no hard to read. See: [Report](https://drive.google.com/open?id=1wlt9Jfo-OT3I_exGLxp9nhp3GnHlBk8n)
++ Model Structure:
+  + ResNet-18  
+  + ResNet-34  
+  + Vanilla ResNet-18  
+  + ResNet-18 with half-channel  
+  + DenseNet-121  
+  + LeNet  
++ Learning rate scheduler
+  + Plateau with different patience
+  + Cosine Warmup with different warmup iters
+  + Triangle Warmup with different warmup iters
++ Optimizer
+  + SGD-Momentum
+  + Adam
+  + AdamW
++ Data augmentation
+  + Flip
+  + Rotate
+  + Pepper noise
 
-For all, three kinds of leaves are provided, and each one is organized in a certain directory, like this (I set them into different parts):  
+## Acknowedgements
+Many thanks to these codes:
++ [DenseNet](https://github.com/bamos/densenet.pytorch/blob/master/densenet.py)
++ [Bert](https://github.com/huggingface/transformers)
 
-> data_dir/train/Leaf_0/xxx.png  
-> data_dir/train/Leaf_1/xy.png  
-> data_dir/train/Leaf_2/xxz.png  
-> data_dir/val/Leaf_0/lxx.png  
-> data_dir/val/Leaf_1/gy.png  
-> data_dir/val/Leaf_2/llz.png  
-
-It's easy to finish this classical task using pretrained model on ImageNet or something else. So I directly use feature extraction of Resnet-50 and train the last dense layer, under guide of [tutorial](https://pytorch.org/tutorials/beginner/finetuning_torchvision_models_tutorial.html) on pytorch official website.  
-
-### File Included  
-
-+ main_task1.py -> main function including training and loading  
-+ predict_task1.py -> prediction function taking one image a time \[I think you can transform it into multi-input one easily\]. And I add in softmax on the final output, so the output value can be responsible for the posibility.  
-
-## Leaf Vein Segmentation
-
-For all, three kinds of leaves and their scratch vein images are provided and some data maybe totally wrong, so please do data filting first. Data structure is like this (I set them into different parts) and notice the mask has same name with the input image, so you can use it to load the label:  
-
-> data_dir/train/input/xxx.png  
-> data_dir/train/mask/xxx.png  
-> data_dir/val/input/yy.png  
-> data_dir/val/mask/yy.png
-
-I think it's more like a segmentation task, so use a image-to-image network, with top-down&bottom-up (U-Net) or other encoder-decoder structure (FCN).  
-As for U-Net, I both try standard U-Net structure and [adapted U-Net structure](https://github.com/milesial/Pytorch-UNet/). I find that the adapted one has better result... Although I can't figure out why.  
-As for FCN, actually I just modify the last two layer of Resnet-50 and add in some layers of transpose convolution to upsample the feature maps until the target resolution. You can use the pretrained resnet model or not, for I both earn enough good result.  
-
-### File Included
-
-+ main_task2.py -> main function including training and loading. You can set some important hyperparameters just at the beginning of the file.  
-+ dataset_task2.py -> rewrite the dataset object of pytorch, so you can load the input image and mask label according to their name in the same time.  
-+ predict_task2.py -> prediction function taking one image a time \[I think you can transform it into multi-input one easily\].  
-+ U_Net.py -> standard U-Net Structure Model.  
-+ UNet_Adapted.py -> adapted U-Net Structure Model.  
-+ FCN -> resnet-based naive model.  
-
-### Training And Evaluation  
-
-+ Adapted-Unet  
-
-<div align="center">
-<img src="./img/Figure_Unet.png" width = "600" height = "400" alt="U-Net Training" align=center />
-</div>
-
-+ Naive FCN  
-
-<div align="center">
-<img src="./img/Figure_fcn.png" width = "600" height = "400" alt="FCN Training" align=center />
-</div>
-
-+ Evaluation  
-
-<p align = "center">
-<img src="./img/test.jpg" width = "200" height = "200" alt="test">
-<img src="./img/test_img_mask.png" width = "200" height = "200" alt="test_mask">
-</p>
-
-<p align = "center">
-<img src="./img/test2.jpg" width = "200" height = "200" alt="test2">
-<img src="./img/test2_img_mask.png" width = "200" height = "200" alt="test2_mask">
-</p>
-
-## Data and Pretrained Model
-
-Data & Pretrained Model: If you really need it, feel free to connect to me...  
-
-## Requirement
-
-+ pytorch
-+ torchvision
-+ numpy
-+ matplotlib
-+ tqdm
-+ pillow
-
-See: [config requirement](./img/config.yaml)  
 
 ## Citing
 
 If you really need this repo, please follow this BibTex:  
-```
+```bibtex
 @misc{LeafVein, 
     author = {Yixuan, Wei},
-    title = {Leaf Classification and Vein Segmentation},
-    howpublished = {\url{https://github.com/weiyx16/Leaf-Classification-Segmentation}},
+    title = {10 class classification on gray image of clothes},
+    howpublished = {\url{https://github.com/weiyx16/MNIST_LIKE_Classification}},
     year = {2019}
 }
-``` -->
+```

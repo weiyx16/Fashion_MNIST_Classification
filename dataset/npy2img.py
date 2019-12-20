@@ -1,11 +1,22 @@
+'''
+
+Image Classification
+10 kind of labels provided from assistant teachers
+Pytorch 1.1.0 & python 3.6
+
+Author: @weiyx16.github.io
+Email: weason1998@gmail.com
+
+@function: Convert the img from npy to png and see what's on earth
+'''
 import numpy as np
 import os
 from PIL import Image
 import cv2
 
-npy_path = r'./data/test.npy'
+npy_path = r'../data/test.npy'
 gt_path = None #r'./data/train.csv'
-save_dir = r'./data/test'
+save_dir = r'../data/test'
 
 if not os.path.exists(save_dir):
     os.mkdir(save_dir)

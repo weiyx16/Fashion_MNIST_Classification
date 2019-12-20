@@ -1,3 +1,15 @@
+'''
+
+Image Classification
+10 kind of labels provided from assistant teachers
+Pytorch 1.1.0 & python 3.6
+
+Author: @weiyx16.github.io
+Email: weason1998@gmail.com
+
+@function: Dataset for npy-format img input
+'''
+
 import torch
 from torch.utils.data import Dataset
 import matplotlib.pyplot as plt

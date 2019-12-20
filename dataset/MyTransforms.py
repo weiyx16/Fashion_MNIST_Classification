@@ -1,3 +1,15 @@
+'''
+
+Image Classification
+10 kind of labels provided from assistant teachers
+Pytorch 1.1.0 & python 3.6
+
+Author: @weiyx16.github.io
+Email: weason1998@gmail.com
+
+@function: Pepper noise augmentation
+'''
+
 import numpy as np
 import random
 from PIL import Image
