@@ -17,8 +17,8 @@ import pandas as pd
 import os
 
 if __name__ == "__main__":
-    src_data_path = r"../data/src.npy"
-    src_gt_path = r"../data/src.csv"
+    src_data_path = r"./data/src.npy"
+    src_gt_path = r"./data/src.csv"
     data = np.load(src_data_path)  # (30000, 784)
     mean = np.mean(data.ravel())
     std = np.std(data.ravel())
@@ -38,10 +38,8 @@ if __name__ == "__main__":
     assert val_data.shape[1] == data.shape[1], "Error during splitting validation set"
     train_data = data[train_idx,:]
     assert train_data.shape[1] == data.shape[1], "Error during splitting training set"
-    if not os.path.exists("../data"):
-        os.mkdir("../data")
-    np.save("../data/validation.npy", val_data)
-    np.save("../data/train.npy", train_data)
+    np.save("./data/validation.npy", val_data)
+    np.save("./data/train.npy", train_data)
 
     # split the gt
     val_gt = gt.iloc[val_idx, :]
@@ -50,8 +48,8 @@ if __name__ == "__main__":
     val_gt.image_id=np.arange(len(val_data))
     train_gt.image_id=np.arange(len(train_data))
     
-    val_gt.to_csv("../data/validation.csv", index=False)
-    train_gt.to_csv("../data/train.csv", index=False)
+    val_gt.to_csv("./data/validation.csv", index=False)
+    train_gt.to_csv("./data/train.csv", index=False)
 
     print(" >> Split the src dataset into {} training img, and {} validation img" .format(train_data.shape[0], val_data.shape[0]))
     print(" Transforms.Normalize(mean = {}, std = {})" .format(mean, std))

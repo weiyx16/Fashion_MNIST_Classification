@@ -22,6 +22,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import matplotlib.pyplot as plt
 import time
 import os
+import subprocess
 from argparse import ArgumentParser
 import copy
 from PIL import Image
@@ -60,7 +61,7 @@ debug_img = 0
 batch_size = 64
 
 # folds
-k_folds = 10
+k_folds = 0
 
 # Number of epochs to train
 num_epochs = 100
@@ -394,7 +395,8 @@ if __name__ == "__main__":
 
     if k_folds == 0:
         if not os.path.isfile(train_data_dir) or not os.path.isfile(validation_data_dir):
-            os.system("python ./dataset/data_split.py")
+            subprocess.call("python ./dataset/data_split.py",shell=True)
+        
         train_data = np.load(train_data_dir)
         train_gt = np.genfromtxt(train_gt_dir, delimiter=',')
         train_gt = train_gt[1:,]
@@ -446,9 +448,9 @@ if __name__ == "__main__":
         # Train and evaluate
         model_ft, val_hist, train_hist = \
             train_model(model_ft, dataloaders_dict, criterion, optimizer_ft, scheduler, num_epochs=num_epochs, dist=args.dist)
-        if not os.path.exists("./model"):
-            os.mkdir("./model")
-        torch.save(model_ft.state_dict(), './model/{}-{}-{}.pkl' .format(model_name, date.today(), ext_params)) 
+        if not os.path.exists("./output"):
+            os.mkdir("./output")
+        torch.save(model_ft.state_dict(), './output/{}-{}-{}.pkl' .format(model_name, date.today(), ext_params)) 
         # show training result
         if not args.dist or (args.dist and local_rank == 0):
             plt.figure(1)
@@ -460,7 +462,7 @@ if __name__ == "__main__":
             # plt.ylim((0.6,1.))
             plt.xticks(np.arange(1, num_epochs+1, 1.0))
             plt.legend()
-            plt.savefig('./model/{}-{}-{}.png' .format(model_name, date.today(), ext_params))
+            plt.savefig('./output/{}-{}-{}.png' .format(model_name, date.today(), ext_params))
         
         model_ft.eval()
         test_result = inference(model_ft, test_dataloader)
@@ -487,9 +489,9 @@ if __name__ == "__main__":
                 train_model(model_ft, dataloaders_dict, criterion, optimizer_ft, scheduler, num_epochs=num_epochs, dist=args.dist)
             
             if not args.dist or (args.dist and local_rank == 0):
-                if not os.path.exists("./model/{}-{}-{}".format(model_name, date.today(), ext_params)):
-                    os.mkdir("./model/{}-{}-{}".format(model_name, date.today(), ext_params))
-                torch.save(model_ft.state_dict(), './model/{}-{}-{}/models-fold-{}.pkl' .format(model_name, date.today(), ext_params, fold)) 
+                if not os.path.exists("./output/{}-{}-{}".format(model_name, date.today(), ext_params)):
+                    os.mkdir("./output/{}-{}-{}".format(model_name, date.today(), ext_params))
+                torch.save(model_ft.state_dict(), './output/{}-{}-{}/models-fold-{}.pkl' .format(model_name, date.today(), ext_params, fold)) 
             
             model_ft.eval()
             test_result = inference(model_ft, test_dataloader)
@@ -509,6 +511,6 @@ if __name__ == "__main__":
     csv_file[:,0] = np.arange(preds.shape[0])
     csv_file[:,1] = preds
     if not args.dist or (args.dist and local_rank == 0):
-        with open("./data/test-{}-{}-{}.csv".format(model_name, date.today(), ext_params), "wb") as f:
+        with open("./output/test-{}-{}-{}.csv".format(model_name, date.today(), ext_params), "wb") as f:
             f.write(b'image_id,label\n')
             np.savetxt(f, csv_file.astype(int), fmt='%i', delimiter=",")
